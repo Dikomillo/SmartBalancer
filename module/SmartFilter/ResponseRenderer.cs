@@ -104,6 +104,11 @@ namespace SmartFilter
                     continue;
 
                 string name = token.Value<string>("name") ?? token.Value<string>("title") ?? "Сезон";
+                string provider = token.Value<string>("provider") ?? token.Value<string>("balanser");
+
+                if (!string.IsNullOrWhiteSpace(provider) && !name.Contains(provider, StringComparison.OrdinalIgnoreCase))
+                    name = $"{provider} - {name}";
+
                 var dataObj = new JObject
                 {
                     ["method"] = "link",
