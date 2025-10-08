@@ -344,28 +344,87 @@ namespace SmartFilter
             return "movie";
         }
 
-        private JArray MergePayloads(IEnumerable<ProviderFetchResult> results, string expectedType)
+        private JToken MergePayloads(IEnumerable<ProviderFetchResult> results, string expectedType)
         {
-            var aggregated = new JArray();
+            var providerResults = (results ?? Array.Empty<ProviderFetchResult>()).ToList();
+            if (providerResults.Count == 0)
+                return new JArray();
 
-            foreach (var result in results)
+            static string ResolveProviderName(ProviderFetchResult result)
             {
+                if (!string.IsNullOrWhiteSpace(result?.ProviderName))
+                    return result.ProviderName;
+
+                if (!string.IsNullOrWhiteSpace(result?.ProviderPlugin))
+                    return result.ProviderPlugin;
+
+                return "Источник";
+            }
+
+            bool groupByProvider = string.Equals(expectedType, "season", StringComparison.OrdinalIgnoreCase);
+
+            if (!groupByProvider)
+            {
+                var aggregated = new JArray();
+
+                foreach (var result in providerResults)
+                {
+                    foreach (var item in ExtractItems(result.Payload, expectedType))
+                    {
+                        if (item is JObject obj)
+                        {
+                            if (string.IsNullOrEmpty(obj.Value<string>("provider")))
+                                obj["provider"] = ResolveProviderName(result);
+
+                            if (string.IsNullOrEmpty(obj.Value<string>("balanser")) && !string.IsNullOrEmpty(result.ProviderPlugin))
+                                obj["balanser"] = result.ProviderPlugin;
+                        }
+
+                        aggregated.Add(item);
+                    }
+                }
+
+                return aggregated;
+            }
+
+            var grouped = new JObject();
+
+            foreach (var result in providerResults)
+            {
+                string providerName = ResolveProviderName(result);
+
+                bool created = false;
+                if (!grouped.TryGetValue(providerName, out var providerToken) || providerToken is not JArray providerArray)
+                {
+                    providerArray = new JArray();
+                    grouped[providerName] = providerArray;
+                    created = true;
+                }
+
+                int beforeCount = providerArray.Count;
+
                 foreach (var item in ExtractItems(result.Payload, expectedType))
                 {
                     if (item is JObject obj)
                     {
                         if (string.IsNullOrEmpty(obj.Value<string>("provider")))
-                            obj["provider"] = result.ProviderName;
+                            obj["provider"] = providerName;
 
                         if (string.IsNullOrEmpty(obj.Value<string>("balanser")) && !string.IsNullOrEmpty(result.ProviderPlugin))
                             obj["balanser"] = result.ProviderPlugin;
                     }
 
-                    aggregated.Add(item);
+                    providerArray.Add(item);
                 }
+
+                if (created && beforeCount == providerArray.Count)
+                    grouped.Remove(providerName);
             }
 
-            return aggregated;
+            if (!grouped.Properties().Any())
+                return new JArray();
+
+            return grouped;
         }
 
         private IEnumerable<JToken> ExtractItems(JToken payload, string expectedType)
