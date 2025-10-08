@@ -56,6 +56,18 @@ namespace SmartFilter
 
     public class SmartFilterEngine
     {
+        private readonly struct AggregatedPayload
+        {
+            public AggregatedPayload(JToken json, string html)
+            {
+                Json = json ?? new JArray();
+                Html = html;
+            }
+
+            public JToken Json { get; }
+            public string Html { get; }
+        }
+
         private sealed class SeasonEntry
         {
             public int? Number { get; init; }
@@ -152,7 +164,9 @@ namespace SmartFilter
             if (successful.Count > 0)
                 aggregation.Type = DetermineContentType(successful, serial, providerFilter, requestedSeason, aggregation.Type);
 
-            aggregation.Data = BuildAggregationData(successful, aggregation.Type, providerFilter, baseQuery);
+            var payload = BuildAggregationData(successful, aggregation.Type, providerFilter, baseQuery);
+            aggregation.Data = payload.Json;
+            aggregation.Html = payload.Html;
             aggregation.Providers = results.Select(r => r.ToStatus()).OrderBy(p => p.Index ?? int.MaxValue).ThenBy(p => p.Name).ToList();
 
             SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
@@ -402,15 +416,15 @@ namespace SmartFilter
             return "movie";
         }
 
-        private JToken BuildAggregationData(IEnumerable<ProviderFetchResult> results, string expectedType, string providerFilter, Dictionary<string, string> baseQuery)
+        private AggregatedPayload BuildAggregationData(IEnumerable<ProviderFetchResult> results, string expectedType, string providerFilter, Dictionary<string, string> baseQuery)
         {
             var providerResults = (results ?? Array.Empty<ProviderFetchResult>()).ToList();
             if (providerResults.Count == 0)
             {
                 if (IsSeriesType(expectedType))
-                    return CreateEmptySeriesPayload();
+                    return CreateEmptySeriesPayload(expectedType);
 
-                return new JArray();
+                return new AggregatedPayload(new JArray(), null);
             }
 
             if (string.Equals(expectedType, "similar", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(providerFilter))
@@ -422,7 +436,7 @@ namespace SmartFilter
             if (string.Equals(expectedType, "episode", StringComparison.OrdinalIgnoreCase))
                 return BuildEpisodePayload(providerResults, baseQuery);
 
-            return MergePayloads(providerResults, expectedType);
+            return new AggregatedPayload(MergePayloads(providerResults, expectedType), null);
         }
 
         private static bool IsSeriesType(string expectedType)
@@ -513,7 +527,7 @@ namespace SmartFilter
             return grouped;
         }
 
-        private JToken BuildSeasonPayload(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
+        private AggregatedPayload BuildSeasonPayload(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
         {
             var seasons = new List<SeasonEntry>();
             var voices = new List<VoiceEntry>();
@@ -579,11 +593,8 @@ namespace SmartFilter
 
             if (seasons.Count == 0)
             {
-                if (voices.Count == 0 && string.IsNullOrWhiteSpace(quality))
-                    return CreateEmptySeriesPayload();
-
                 var voiceTpl = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
-                return CreateEmptySeriesPayloadWithVoice(voiceTpl, quality);
+                return CreateEmptySeriesPayload("season", voiceTpl, quality);
             }
 
             seasons.Sort((left, right) =>
@@ -622,10 +633,12 @@ namespace SmartFilter
             }
 
             var voiceTemplate = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
-            return ParseTemplateJson(seasonTpl.ToJson(voiceTemplate));
+            var json = ParseTemplateJson(seasonTpl.ToJson(voiceTemplate));
+            var html = seasonTpl.ToHtml(voiceTemplate);
+            return new AggregatedPayload(json, html);
         }
 
-        private JToken BuildEpisodePayload(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
+        private AggregatedPayload BuildEpisodePayload(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
         {
             var episodes = new List<EpisodeEntry>();
             var voices = new List<VoiceEntry>();
@@ -695,7 +708,7 @@ namespace SmartFilter
             if (episodes.Count == 0)
             {
                 var voiceTpl = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
-                return CreateEmptySeriesPayloadWithVoice(voiceTpl, quality);
+                return CreateEmptySeriesPayload("episode", voiceTpl, quality);
             }
 
             episodes.Sort((left, right) =>
@@ -742,40 +755,38 @@ namespace SmartFilter
                     hls_manifest_timeout: episode.HlsManifestTimeout);
             }
 
-            var resultToken = ParseTemplateJson(episodeTpl.ToJson(voiceTemplate));
-            if (!string.IsNullOrWhiteSpace(quality) && resultToken is JObject obj)
+            var json = ParseTemplateJson(episodeTpl.ToJson(voiceTemplate));
+            if (!string.IsNullOrWhiteSpace(quality) && json is JObject obj)
                 obj["maxquality"] = quality;
 
-            return resultToken;
+            var html = episodeTpl.ToHtml(voiceTemplate);
+            return new AggregatedPayload(json, html);
         }
 
-        private static JObject CreateEmptySeriesPayload()
+        private AggregatedPayload CreateEmptySeriesPayload(string expectedType, VoiceTpl? voiceTpl = null, string quality = null)
         {
-            return new JObject
-            {
-                ["data"] = new JArray()
-            };
-        }
+            bool isEpisode = string.Equals(expectedType, "episode", StringComparison.OrdinalIgnoreCase);
 
-        private static JToken CreateEmptySeriesPayloadWithVoice(VoiceTpl? voiceTpl, string quality)
-        {
-            var payload = CreateEmptySeriesPayload();
-
-            if (voiceTpl.HasValue)
+            if (isEpisode)
             {
-                var data = voiceTpl.Value.data;
-                if (data != null && data.Count > 0)
-                {
-                    var voiceJson = voiceTpl.Value.ToJson();
-                    if (!string.IsNullOrWhiteSpace(voiceJson))
-                        payload["voice"] = JToken.Parse(voiceJson);
-                }
+                var tpl = new EpisodeTpl(0);
+                var json = ParseTemplateJson(tpl.ToJson(voiceTpl));
+
+                if (!string.IsNullOrWhiteSpace(quality) && json is JObject obj)
+                    obj["maxquality"] = quality;
+
+                var html = tpl.ToHtml(voiceTpl);
+                return new AggregatedPayload(json, html);
             }
 
-            if (!string.IsNullOrWhiteSpace(quality))
-                payload["maxquality"] = quality;
+            SeasonTpl seasonTpl = string.IsNullOrWhiteSpace(quality)
+                ? new SeasonTpl(0)
+                : new SeasonTpl(quality, 0);
 
-            return payload;
+            var seasonJson = ParseTemplateJson(seasonTpl.ToJson(voiceTpl));
+            var seasonHtml = seasonTpl.ToHtml(voiceTpl);
+
+            return new AggregatedPayload(seasonJson, seasonHtml);
         }
 
         private static VoiceTpl BuildVoiceTemplate(List<VoiceEntry> voices)
@@ -1332,7 +1343,7 @@ namespace SmartFilter
             return true;
         }
 
-        private JToken BuildProviderList(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
+        private AggregatedPayload BuildProviderList(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var entries = new List<(string Title, string Year, string Details, string Url, string Provider)>();
@@ -1366,14 +1377,14 @@ namespace SmartFilter
             }
 
             if (entries.Count == 0)
-                return new JArray();
+                return new AggregatedPayload(new JArray(), null);
 
             var tpl = new SimilarTpl(entries.Count);
             foreach (var entry in entries)
                 tpl.Append(entry.Title, entry.Year, entry.Details, entry.Url);
 
-            var token = ParseTemplateJson(tpl.ToJson());
-            if (token is JObject obj && obj.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
+            var json = ParseTemplateJson(tpl.ToJson());
+            if (json is JObject obj && obj.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
             {
                 for (int i = 0; i < dataArray.Count && i < entries.Count; i++)
                 {
@@ -1382,7 +1393,8 @@ namespace SmartFilter
                 }
             }
 
-            return token;
+            var html = tpl.ToHtml();
+            return new AggregatedPayload(json, html);
         }
 
         private static string BuildProviderDetails(ProviderFetchResult result)

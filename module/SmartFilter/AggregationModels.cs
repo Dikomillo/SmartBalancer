@@ -39,6 +39,7 @@ namespace SmartFilter
     {
         public string Type { get; set; }
         public JToken Data { get; set; }
+        public string Html { get; set; }
         public List<ProviderStatus> Providers { get; set; } = new List<ProviderStatus>();
         public string ProgressKey { get; set; }
     }
