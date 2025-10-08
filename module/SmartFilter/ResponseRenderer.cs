@@ -135,9 +135,10 @@ namespace SmartFilter
 
                 string name = token.Value<string>("name") ?? token.Value<string>("title") ?? "Сезон";
                 string provider = token.Value<string>("provider") ?? token.Value<string>("balanser");
+                if (string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(provider))
+                    name = provider;
 
-                if (!string.IsNullOrWhiteSpace(provider) && !name.Contains(provider, StringComparison.OrdinalIgnoreCase))
-                    name = $"{provider} - {name}";
+                string metadata = BuildMetadata(token, includeProvider: true);
 
                 var dataObj = new JObject
                 {
@@ -158,6 +159,14 @@ namespace SmartFilter
                 html.Append(WebUtility.HtmlEncode(serialized));
                 html.Append("'><div class=\"videos__season-layers\"></div><div class=\"videos__item-imgbox videos__season-imgbox\"><div class=\"videos__item-title videos__season-title\">");
                 html.Append(WebUtility.HtmlEncode(name));
+
+                if (!string.IsNullOrEmpty(metadata))
+                {
+                    html.Append("<div class=\"smartfilter-meta\">");
+                    html.Append(WebUtility.HtmlEncode(metadata));
+                    html.Append("</div>");
+                }
+
                 html.Append("</div></div></div>");
             }
 
@@ -211,10 +220,10 @@ namespace SmartFilter
                         continue;
 
                     string name = token.Value<string>("name") ?? token.Value<string>("title") ?? "Сезон";
-                    string translate = token.Value<string>("translate") ?? token.Value<string>("voice");
+                    if (string.IsNullOrWhiteSpace(name))
+                        name = providerName;
 
-                    if (!string.IsNullOrWhiteSpace(translate) && !name.Contains(translate, StringComparison.OrdinalIgnoreCase))
-                        name = $"{name} ({translate})";
+                    string metadata = BuildMetadata(token, includeProvider: true);
 
                     var dataObj = new JObject
                     {
@@ -234,6 +243,14 @@ namespace SmartFilter
                         html.Append(" style=\"display:none;\"");
                     html.Append("><div class=\"videos__season-layers\"></div><div class=\"videos__item-imgbox videos__season-imgbox\"><div class=\"videos__item-title videos__season-title\">");
                     html.Append(WebUtility.HtmlEncode(name));
+
+                    if (!string.IsNullOrEmpty(metadata))
+                    {
+                        html.Append("<div class=\"smartfilter-meta\">");
+                        html.Append(WebUtility.HtmlEncode(metadata));
+                        html.Append("</div>");
+                    }
+
                     html.Append("</div></div></div>");
                 }
 
@@ -276,7 +293,18 @@ namespace SmartFilter
                 html.Append(" data-json='");
                 html.Append(WebUtility.HtmlEncode(serialized));
                 html.Append("'><div class=\"videos__item-imgbox videos__movie-imgbox\"></div><div class=\"videos__item-title\">");
-                html.Append(WebUtility.HtmlEncode(token.Value<string>("name") ?? token.Value<string>("title") ?? "Серия"));
+
+                string title = token.Value<string>("name") ?? token.Value<string>("title") ?? "Серия";
+                html.Append(WebUtility.HtmlEncode(title));
+
+                string metadata = BuildMetadata(token, includeProvider: true);
+                if (!string.IsNullOrEmpty(metadata))
+                {
+                    html.Append("<div class=\"smartfilter-meta\">");
+                    html.Append(WebUtility.HtmlEncode(metadata));
+                    html.Append("</div>");
+                }
+
                 html.Append("</div></div>");
             }
 
@@ -296,6 +324,8 @@ namespace SmartFilter
             EnsureStream(token);
             NormalizeHeaders(token);
             EnsureTranslate(token);
+            EnsureMaxQuality(token);
+            EnsureDetails(token);
 
             if (string.IsNullOrWhiteSpace(token.Value<string>("title")))
             {
@@ -315,6 +345,36 @@ namespace SmartFilter
             {
                 NullValueHandling = NullValueHandling.Ignore
             });
+        }
+
+        private static string BuildMetadata(JObject token, bool includeProvider)
+        {
+            if (token == null)
+                return null;
+
+            var parts = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void AddPart(string value)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                    return;
+
+                value = value.Trim();
+                if (value.Length == 0)
+                    return;
+
+                if (seen.Add(value))
+                    parts.Add(value);
+            }
+
+            AddPart(token.Value<string>("translate") ?? token.Value<string>("voice") ?? token.Value<string>("voice_name"));
+            AddPart(token.Value<string>("maxquality") ?? token.Value<string>("quality"));
+
+            if (includeProvider)
+                AddPart(token.Value<string>("provider") ?? token.Value<string>("balanser") ?? token.Value<string>("details"));
+
+            return parts.Count == 0 ? null : string.Join(" • ", parts);
         }
 
         private static void EnsureMethod(JObject obj)

@@ -267,10 +267,16 @@ namespace SmartFilter
                     if (obj.TryGetValue("type", out var typeToken) && typeToken.Type == JTokenType.String)
                         contentType = typeToken.ToString();
 
-                    if (obj.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
-                        itemsCount = dataArray.Count;
-                    else if (obj.TryGetValue("results", out var resultsToken) && resultsToken is JArray resultsArray)
-                        itemsCount = resultsArray.Count;
+                    if (obj.TryGetValue("data", out var dataToken))
+                        itemsCount = CountItems(dataToken);
+                    else if (obj.TryGetValue("results", out var resultsToken))
+                        itemsCount = CountItems(resultsToken);
+
+                    if (itemsCount == 0 && obj.TryGetValue("episodes", out var episodesToken))
+                        itemsCount = CountItems(episodesToken);
+
+                    if (itemsCount == 0)
+                        itemsCount = CountItems(obj);
 
                     payload = obj;
                 }
@@ -434,25 +440,51 @@ namespace SmartFilter
 
             if (payload is JObject obj)
             {
-                if (obj.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
+                if (obj.TryGetValue("data", out var dataToken))
                 {
-                    foreach (var item in dataArray)
+                    foreach (var item in EnumerateArrayItems(dataToken))
                         yield return item.DeepClone();
                     yield break;
                 }
 
-                if (obj.TryGetValue("results", out var resultsToken) && resultsToken is JArray resultsArray)
+                if (obj.TryGetValue("results", out var resultsToken))
                 {
-                    foreach (var item in resultsArray)
+                    foreach (var item in EnumerateArrayItems(resultsToken))
                         yield return item.DeepClone();
                     yield break;
                 }
 
-                if (expectedType == "episode" && obj.TryGetValue("episodes", out var episodesToken) && episodesToken is JArray episodesArray)
+                if (expectedType == "episode" && obj.TryGetValue("episodes", out var episodesToken))
                 {
-                    foreach (var item in episodesArray)
+                    foreach (var item in EnumerateArrayItems(episodesToken))
                         yield return item.DeepClone();
                     yield break;
+                }
+
+                if (expectedType == "season")
+                {
+                    if (obj.TryGetValue("seasons", out var seasonsToken))
+                    {
+                        foreach (var item in EnumerateArrayItems(seasonsToken))
+                            yield return item.DeepClone();
+                        yield break;
+                    }
+
+                    if (obj.TryGetValue("playlist", out var playlistToken))
+                    {
+                        foreach (var item in EnumerateArrayItems(playlistToken))
+                            yield return item.DeepClone();
+                        yield break;
+                    }
+                }
+
+                foreach (var property in obj.Properties())
+                {
+                    if (property.Value is JArray propertyArray)
+                    {
+                        foreach (var item in propertyArray)
+                            yield return item.DeepClone();
+                    }
                 }
             }
             else if (payload is JArray array)
@@ -460,6 +492,47 @@ namespace SmartFilter
                 foreach (var item in array)
                     yield return item.DeepClone();
             }
+        }
+
+        private static IEnumerable<JToken> EnumerateArrayItems(JToken token)
+        {
+            if (token == null)
+                yield break;
+
+            if (token is JArray array)
+            {
+                foreach (var item in array)
+                    yield return item;
+                yield break;
+            }
+
+            if (token is JObject obj)
+            {
+                foreach (var property in obj.Properties())
+                {
+                    foreach (var item in EnumerateArrayItems(property.Value))
+                        yield return item;
+                }
+            }
+        }
+
+        private static int CountItems(JToken token)
+        {
+            if (token == null)
+                return 0;
+
+            if (token is JArray array)
+                return array.Count;
+
+            if (token is JObject obj)
+            {
+                int count = 0;
+                foreach (var property in obj.Properties())
+                    count += CountItems(property.Value);
+                return count;
+            }
+
+            return 0;
         }
 
         private Dictionary<string, string> BuildBaseQueryParameters(string imdbId, long kinopoiskId, string title, string originalTitle, int year, int serial, string originalLanguage)
