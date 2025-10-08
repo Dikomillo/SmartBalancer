@@ -101,5 +101,10 @@ namespace SmartFilter
         public int maxRetryAttempts { get; set; } = 3;
         public int retryDelayMs { get; set; } = 1000;
         public bool detailedLogging { get; set; } = true;
+
+        public bool enableSeasonFallback { get; set; } = true;
+        public bool enableEpisodeFallback { get; set; } = true;
+        public bool logDroppedItems { get; set; } = false;
+        public bool preferSingleProviderPassthrough { get; set; } = true;
     }
 }

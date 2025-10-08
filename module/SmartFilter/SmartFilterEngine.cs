@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Caching.Memory;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Shared.Models;
 using Shared.Models.Templates;
@@ -167,6 +168,13 @@ namespace SmartFilter
             NormalizeSeasonQuery(baseQuery, serial, requestedSeason);
             var providers = await GetActiveProvidersAsync(baseQuery, serial);
 
+            bool preferSingleProvider = false;
+            if (ModInit.conf.preferSingleProviderPassthrough && providers.Count == 1 && string.IsNullOrWhiteSpace(providerFilter))
+            {
+                preferSingleProvider = true;
+                providerFilter = providers[0].Name;
+            }
+
             if (!string.IsNullOrWhiteSpace(providerFilter))
             {
                 providers = providers
@@ -192,9 +200,15 @@ namespace SmartFilter
             var tasks = providers.Select(provider => FetchProviderTemplateAsync(provider, baseQuery, progressKey)).ToList();
             var results = await Task.WhenAll(tasks);
 
+            foreach (var result in results)
+                ApplyAdapters(result);
+
             var successful = results.Where(r => r.Success && r.Payload != null).ToList();
             if (successful.Count > 0)
                 aggregation.Type = DetermineContentType(successful, serial, providerFilter, requestedSeason, aggregation.Type);
+
+            if (preferSingleProvider && string.Equals(aggregation.Type, "similar", StringComparison.OrdinalIgnoreCase))
+                aggregation.Type = requestedSeason > 0 ? "episode" : "season";
 
             var payload = BuildAggregationData(successful, aggregation.Type, providerFilter, baseQuery);
             aggregation.Data = payload.Json;
@@ -634,6 +648,13 @@ namespace SmartFilter
 
             if (seasons.Count == 0)
             {
+                if (ModInit.conf.enableSeasonFallback)
+                {
+                    var fallback = TryBuildSeasonFallback(providerResults, baseQuery, processedVoices, quality, currentTranslation, originalLanguage);
+                    if (fallback != null)
+                        return fallback;
+                }
+
                 var voiceTpl = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
                 return CreateEmptySeriesPayload("season", voiceTpl, quality);
             }
@@ -669,6 +690,135 @@ namespace SmartFilter
 
                 if (!season.Number.HasValue || duplicateSeasonNumbers.Contains(season.Number.Value))
                     displayName = CombineNameWithProvider(displayName, season.Provider);
+
+                seasonTpl.Append(displayName, season.Link, season.Number?.ToString() ?? string.Empty);
+            }
+
+            var voiceTemplate = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
+            var json = ParseTemplateJson(seasonTpl.ToJson(voiceTemplate));
+            var html = seasonTpl.ToHtml(voiceTemplate);
+            return new AggregatedPayload(json, html);
+        }
+
+        private AggregatedPayload TryBuildSeasonFallback(
+            IEnumerable<ProviderFetchResult> providerResults,
+            Dictionary<string, string> baseQuery,
+            List<VoiceEntry> strictVoices,
+            string quality,
+            string currentTranslation,
+            string originalLanguage)
+        {
+            var seasons = new List<SeasonEntry>();
+            var voices = new List<VoiceEntry>();
+            var seenSeasonKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenVoiceLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string localQuality = quality;
+
+            foreach (var result in providerResults)
+            {
+                if (!result.Success || result.Payload == null)
+                    continue;
+
+                localQuality ??= ExtractQuality(result.Payload);
+                string providerName = ResolveProviderName(result);
+
+                foreach (var voiceToken in ExtractVoiceItems(result.Payload))
+                {
+                    var normalizedVoice = NormalizeVoiceItem(voiceToken, result, baseQuery, null, currentTranslation);
+                    if (normalizedVoice == null)
+                        continue;
+
+                    string voiceLink = normalizedVoice.Value<string>("url");
+                    if (string.IsNullOrWhiteSpace(voiceLink) || !seenVoiceLinks.Add(voiceLink))
+                        continue;
+
+                    voices.Add(new VoiceEntry
+                    {
+                        Name = normalizedVoice.Value<string>("name"),
+                        Active = normalizedVoice.Value<bool?>("active") ?? false,
+                        Link = voiceLink,
+                        Provider = providerName
+                    });
+                }
+
+                foreach (var episodeToken in ExtractEpisodeTokens(result.Payload))
+                {
+                    if (episodeToken is not JObject episodeObj)
+                        continue;
+
+                    if (!NormalizeEpisodeItem(episodeObj, result, strict: false, out var failureReason))
+                    {
+                        LogNormalizationFailure("season-fallback", result, episodeObj, failureReason);
+                        continue;
+                    }
+
+                    int? seasonNumber = episodeObj.Value<int?>("s") ?? episodeObj.Value<int?>("season");
+                    if (!seasonNumber.HasValue || seasonNumber.Value <= 0)
+                        continue;
+
+                    string link = BuildSmartFilterUrl(baseQuery, providerName, seasonNumber, currentTranslation);
+                    if (string.IsNullOrWhiteSpace(link))
+                        continue;
+
+                    string key = $"{providerName}:{seasonNumber.Value}";
+                    if (!seenSeasonKeys.Add(key))
+                        continue;
+
+                    seasons.Add(new SeasonEntry
+                    {
+                        Number = seasonNumber,
+                        Name = $"{seasonNumber.Value} сезон",
+                        Link = link,
+                        Provider = providerName
+                    });
+                }
+            }
+
+            if (seasons.Count == 0)
+                return null;
+
+            if (strictVoices != null)
+            {
+                foreach (var voice in strictVoices)
+                {
+                    if (voice == null || string.IsNullOrWhiteSpace(voice.Link))
+                        continue;
+
+                    voices.Add(new VoiceEntry
+                    {
+                        Name = voice.Name,
+                        Active = voice.Active,
+                        Link = voice.Link,
+                        Provider = voice.Provider
+                    });
+                }
+            }
+
+            var processedVoices = FilterAndSortVoices(voices, originalLanguage, currentTranslation);
+
+            seasons.Sort((left, right) =>
+            {
+                int leftSeason = left.Number ?? int.MaxValue;
+                int rightSeason = right.Number ?? int.MaxValue;
+                int compare = leftSeason.CompareTo(rightSeason);
+                if (compare != 0)
+                    return compare;
+
+                return string.Compare(left.Provider, right.Provider, StringComparison.OrdinalIgnoreCase);
+            });
+
+            var seasonTpl = string.IsNullOrWhiteSpace(localQuality)
+                ? new SeasonTpl(seasons.Count)
+                : new SeasonTpl(localQuality, seasons.Count);
+
+            foreach (var season in seasons)
+            {
+                string displayName = string.IsNullOrWhiteSpace(season.Name)
+                    ? (season.Number.HasValue ? $"{season.Number.Value} сезон" : season.Provider)
+                    : season.Name;
+
+                if (string.IsNullOrWhiteSpace(displayName))
+                    displayName = season.Provider;
 
                 seasonTpl.Append(displayName, season.Link, season.Number?.ToString() ?? string.Empty);
             }
@@ -723,8 +873,11 @@ namespace SmartFilter
                     if (token is not JObject episodeObj)
                         continue;
 
-                    if (!NormalizeEpisodeItem(episodeObj, result))
+                    if (!NormalizeEpisodeItem(episodeObj, result, strict: true, out var failureReason))
+                    {
+                        LogNormalizationFailure("episode", result, episodeObj, failureReason);
                         continue;
+                    }
 
                     string key = BuildEpisodeKey(episodeObj);
                     if (!string.IsNullOrWhiteSpace(key) && !seenEpisodeKeys.Add(key))
@@ -751,6 +904,13 @@ namespace SmartFilter
 
             if (episodes.Count == 0)
             {
+                if (ModInit.conf.enableEpisodeFallback)
+                {
+                    var fallback = TryBuildLenientEpisodePayload(providerResults, baseQuery, processedVoices, quality, baseTitle, currentTranslation, originalLanguage, requestedSeason);
+                    if (fallback != null)
+                        return fallback;
+                }
+
                 var voiceTpl = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
                 return CreateEmptySeriesPayload("episode", voiceTpl, quality);
             }
@@ -802,6 +962,162 @@ namespace SmartFilter
             var json = ParseTemplateJson(episodeTpl.ToJson(voiceTemplate));
             if (!string.IsNullOrWhiteSpace(quality) && json is JObject obj)
                 obj["maxquality"] = quality;
+
+            var html = BuildEpisodeHtml(episodeTpl, voiceTemplate);
+            return new AggregatedPayload(json, html);
+        }
+
+        private AggregatedPayload TryBuildLenientEpisodePayload(
+            IEnumerable<ProviderFetchResult> providerResults,
+            Dictionary<string, string> baseQuery,
+            List<VoiceEntry> strictVoices,
+            string quality,
+            string baseTitle,
+            string currentTranslation,
+            string originalLanguage,
+            int? requestedSeason)
+        {
+            var episodes = new List<EpisodeEntry>();
+            var voices = new List<VoiceEntry>();
+            var seenEpisodeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenVoiceLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string localQuality = quality;
+
+            foreach (var result in providerResults)
+            {
+                if (!result.Success || result.Payload == null)
+                    continue;
+
+                localQuality ??= ExtractQuality(result.Payload);
+                string providerName = ResolveProviderName(result);
+
+                foreach (var voiceToken in ExtractVoiceItems(result.Payload))
+                {
+                    var normalizedVoice = NormalizeVoiceItem(voiceToken, result, baseQuery, requestedSeason, currentTranslation);
+                    if (normalizedVoice == null)
+                        continue;
+
+                    string voiceLink = normalizedVoice.Value<string>("url");
+                    if (string.IsNullOrWhiteSpace(voiceLink) || !seenVoiceLinks.Add(voiceLink))
+                        continue;
+
+                    voices.Add(new VoiceEntry
+                    {
+                        Name = normalizedVoice.Value<string>("name"),
+                        Active = normalizedVoice.Value<bool?>("active") ?? false,
+                        Link = voiceLink,
+                        Provider = providerName
+                    });
+                }
+
+                foreach (var token in ExtractEpisodeTokens(result.Payload))
+                {
+                    if (token is not JObject episodeObj)
+                        continue;
+
+                    if (!NormalizeEpisodeItem(episodeObj, result, strict: false, out var failureReason))
+                    {
+                        LogNormalizationFailure("episode-fallback", result, episodeObj, failureReason);
+                        continue;
+                    }
+
+                    string key = BuildEpisodeKey(episodeObj);
+                    if (!string.IsNullOrWhiteSpace(key) && !seenEpisodeKeys.Add(key))
+                        continue;
+
+                    episodes.Add(new EpisodeEntry
+                    {
+                        Season = episodeObj.Value<int?>("s") ?? episodeObj.Value<int?>("season"),
+                        Episode = episodeObj.Value<int?>("e") ?? episodeObj.Value<int?>("episode"),
+                        Name = episodeObj.Value<string>("name") ?? episodeObj.Value<string>("title"),
+                        Link = episodeObj.Value<string>("url"),
+                        Method = episodeObj.Value<string>("method"),
+                        Stream = episodeObj.Value<string>("stream") ?? episodeObj.Value<string>("streamlink"),
+                        Translation = episodeObj.Value<string>("translate") ?? episodeObj.Value<string>("voice_name") ?? episodeObj.Value<string>("voice") ?? episodeObj.Value<string>("details"),
+                        Provider = providerName,
+                        Headers = episodeObj["headers"] as JObject,
+                        HlsManifestTimeout = episodeObj.Value<int?>("hls_manifest_timeout"),
+                        Quality = episodeObj.Value<string>("quality") ?? episodeObj.Value<string>("maxquality")
+                    });
+                }
+            }
+
+            if (episodes.Count == 0)
+                return null;
+
+            if (strictVoices != null)
+            {
+                foreach (var voice in strictVoices)
+                {
+                    if (voice == null || string.IsNullOrWhiteSpace(voice.Link))
+                        continue;
+
+                    voices.Add(new VoiceEntry
+                    {
+                        Name = voice.Name,
+                        Active = voice.Active,
+                        Link = voice.Link,
+                        Provider = voice.Provider
+                    });
+                }
+            }
+
+            var processedVoices = FilterAndSortVoices(voices, originalLanguage, currentTranslation);
+
+            episodes.Sort((left, right) =>
+            {
+                int leftSeason = left.Season ?? int.MaxValue;
+                int rightSeason = right.Season ?? int.MaxValue;
+                int compare = leftSeason.CompareTo(rightSeason);
+                if (compare != 0)
+                    return compare;
+
+                int leftEpisode = left.Episode ?? int.MaxValue;
+                int rightEpisode = right.Episode ?? int.MaxValue;
+                compare = leftEpisode.CompareTo(rightEpisode);
+                if (compare != 0)
+                    return compare;
+
+                return string.Compare(left.Provider, right.Provider, StringComparison.OrdinalIgnoreCase);
+            });
+
+            var voiceTemplate = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
+            var episodeTpl = new EpisodeTpl(episodes.Count);
+
+            foreach (var episode in episodes)
+            {
+                string seasonValue = episode.Season?.ToString() ?? string.Empty;
+                string episodeValue = episode.Episode?.ToString() ?? string.Empty;
+                string name = string.IsNullOrWhiteSpace(episode.Name) && episode.Episode.HasValue
+                    ? $"{episode.Episode.Value} серия"
+                    : episode.Name ?? "Серия";
+                string method = string.IsNullOrWhiteSpace(episode.Method) ? "play" : episode.Method;
+                string voiceName = BuildVoiceLabel(episode.Translation, episode.Provider, episode.Quality);
+                var headers = ConvertHeaders(episode.Headers);
+
+                episodeTpl.Append(
+                    name,
+                    string.IsNullOrWhiteSpace(baseTitle) ? episode.Provider : baseTitle,
+                    seasonValue,
+                    episodeValue,
+                    episode.Link,
+                    method,
+                    streamlink: episode.Stream,
+                    voice_name: voiceName,
+                    headers: headers,
+                    hls_manifest_timeout: episode.HlsManifestTimeout);
+            }
+
+            var json = ParseTemplateJson(episodeTpl.ToJson(voiceTemplate));
+
+            if (!string.IsNullOrWhiteSpace(localQuality) && json is JObject obj && obj.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
+            {
+                foreach (var item in dataArray.OfType<JObject>())
+                {
+                    if (string.IsNullOrWhiteSpace(item.Value<string>("maxquality")))
+                        item["maxquality"] = localQuality;
+                }
+            }
 
             var html = BuildEpisodeHtml(episodeTpl, voiceTemplate);
             return new AggregatedPayload(json, html);
@@ -1164,13 +1480,56 @@ namespace SmartFilter
             }
         }
 
-        private bool NormalizeEpisodeItem(JObject obj, ProviderFetchResult source)
+        private void LogNormalizationFailure(string stage, ProviderFetchResult source, JObject payload, string reason)
         {
-            if (obj == null)
-                return false;
+            if (!(ModInit.conf.detailedLogging || ModInit.conf.logDroppedItems))
+                return;
 
-            if (!EnsureUrl(obj, "url", "link", "stream", "file", "src"))
+            try
+            {
+                string providerName = ResolveProviderName(source);
+                string message = $"SmartFilter[{stage}]: пропущен элемент провайдера '{providerName}'";
+                if (!string.IsNullOrWhiteSpace(reason))
+                    message += $": {reason}";
+
+                Console.WriteLine(message);
+
+                if (ModInit.conf.logDroppedItems && payload != null)
+                {
+                    var snapshot = payload.DeepClone();
+                    Console.WriteLine(snapshot.ToString(ModInit.conf.detailedLogging ? Formatting.Indented : Formatting.None));
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private bool NormalizeEpisodeItem(JObject obj, ProviderFetchResult source, bool strict, out string failureReason)
+        {
+            failureReason = null;
+
+            if (obj == null)
+            {
+                failureReason = "пустой объект";
                 return false;
+            }
+
+            if (!EnsureUrl(obj, "url", "link", "stream", "file", "src", "iframe", "watch", "hls", "manifest"))
+            {
+                if (!strict)
+                {
+                    string candidate = TryFindAnyUrl(obj);
+                    if (!string.IsNullOrWhiteSpace(candidate))
+                        obj["url"] = candidate;
+                }
+
+                if (string.IsNullOrWhiteSpace(obj.Value<string>("url")))
+                {
+                    failureReason = "не удалось определить ссылку";
+                    return false;
+                }
+            }
 
             EnsureMethod(obj, "play");
 
@@ -1226,7 +1585,187 @@ namespace SmartFilter
                     obj.Remove("headers");
             }
 
-            return true;
+            return null;
+        }
+
+        private bool NormalizeEpisodeItem(JObject obj, ProviderFetchResult source)
+            => NormalizeEpisodeItem(obj, source, strict: true, out _);
+
+        private static string TryFindAnyUrl(JObject obj)
+        {
+            if (obj == null)
+                return null;
+
+            foreach (var property in obj.Properties())
+            {
+                if (property.Value == null || property.Value.Type == JTokenType.Null)
+                    continue;
+
+                if (property.Value.Type == JTokenType.String)
+                {
+                    string value = property.Value.ToString();
+                    if (LooksLikeUrl(value))
+                        return value;
+                }
+
+                if (property.Value is JObject nested)
+                {
+                    string nestedValue = TryFindAnyUrl(nested);
+                    if (!string.IsNullOrWhiteSpace(nestedValue))
+                        return nestedValue;
+                }
+
+                if (property.Value is JArray array)
+                {
+                    foreach (var item in array)
+                    {
+                        if (item is JObject nestedObj)
+                        {
+                            string nestedValue = TryFindAnyUrl(nestedObj);
+                            if (!string.IsNullOrWhiteSpace(nestedValue))
+                                return nestedValue;
+                        }
+                        else if (item.Type == JTokenType.String)
+                        {
+                            string value = item.ToString();
+                            if (LooksLikeUrl(value))
+                                return value;
+                        }
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private static bool LooksLikeUrl(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            return value.Contains("://", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("//")
+                || value.StartsWith("/", StringComparison.Ordinal)
+                || value.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                || value.StartsWith("magnet:", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void ApplyAdapters(ProviderFetchResult result)
+        {
+            if (result?.Payload == null)
+                return;
+
+            NormalizeProviderPayload(result.Payload);
+
+            if (result.Payload is JObject obj)
+            {
+                PromoteArray(obj, "playlist", "results");
+                PromoteArray(obj, "playlists", "results");
+                PromoteArray(obj, "items", "results");
+                PromoteArray(obj, "list", "results");
+                PromoteArray(obj, "folder", "data");
+                PromoteArray(obj, "folders", "data");
+                PromoteArray(obj, "children", "data");
+            }
+        }
+
+        private static void PromoteArray(JObject obj, string sourceKey, string targetKey)
+        {
+            if (obj == null || string.IsNullOrWhiteSpace(sourceKey) || string.IsNullOrWhiteSpace(targetKey))
+                return;
+
+            if (obj.TryGetValue(targetKey, out var existing) && existing is JArray)
+                return;
+
+            if (!obj.TryGetValue(sourceKey, out var token) || token == null)
+                return;
+
+            if (token is JArray array)
+            {
+                obj[targetKey] = array;
+            }
+            else if (token is JObject nested && ShouldConvertToArray(nested))
+            {
+                obj[targetKey] = NormalizeDictionaryToArray(nested);
+            }
+        }
+
+        private static void NormalizeProviderPayload(JToken token)
+        {
+            if (token == null)
+                return;
+
+            if (token is JObject obj)
+            {
+                foreach (var property in obj.Properties().ToList())
+                {
+                    NormalizeProviderPayload(property.Value);
+
+                    if (property.Value is JObject nested && ShouldConvertToArray(nested))
+                        obj[property.Name] = NormalizeDictionaryToArray(nested);
+                }
+            }
+            else if (token is JArray array)
+            {
+                foreach (var item in array)
+                    NormalizeProviderPayload(item);
+            }
+        }
+
+        private static bool ShouldConvertToArray(JObject obj)
+        {
+            if (obj == null)
+                return false;
+
+            int count = 0;
+            int convertible = 0;
+
+            foreach (var property in obj.Properties())
+            {
+                count++;
+                if (string.IsNullOrWhiteSpace(property.Name))
+                    return false;
+
+                if (Regex.IsMatch(property.Name, "^\\d+"))
+                {
+                    convertible++;
+                    continue;
+                }
+
+                if (property.Value is JObject || property.Value is JArray || property.Value.Type == JTokenType.Null)
+                {
+                    convertible++;
+                    continue;
+                }
+
+                return false;
+            }
+
+            return count > 0 && convertible == count;
+        }
+
+        private static JArray NormalizeDictionaryToArray(JObject obj)
+        {
+            var array = new JArray();
+
+            foreach (var property in obj.Properties().OrderBy(p => ParseLeadingInt(p.Name)).ThenBy(p => p.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                array.Add(property.Value);
+            }
+
+            return array;
+        }
+
+        private static int ParseLeadingInt(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return int.MaxValue;
+
+            var match = Regex.Match(value, "\\d+");
+            if (match.Success && int.TryParse(match.Value, out var parsed))
+                return parsed;
+
+            return int.MaxValue;
         }
 
         private JObject NormalizeVoiceItem(JToken voiceToken, ProviderFetchResult source, Dictionary<string, string> baseQuery, int? seasonNumber, string currentTranslation)
