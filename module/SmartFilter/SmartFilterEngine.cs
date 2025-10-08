@@ -476,11 +476,17 @@ namespace SmartFilter
 
                 var item = new JObject
                 {
+                    ["id"] = result.ProviderIndex ?? list.Count + 1,
                     ["method"] = "link",
                     ["url"] = url,
                     ["title"] = providerName,
                     ["provider"] = providerName
                 };
+
+                if (baseQuery.TryGetValue("year", out var yearValue) && int.TryParse(yearValue, out var parsedYear))
+                    item["year"] = parsedYear;
+                else
+                    item["year"] = 0;
 
                 string details = BuildProviderDetails(result);
                 if (!string.IsNullOrWhiteSpace(details))
