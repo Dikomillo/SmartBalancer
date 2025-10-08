@@ -1,2 +1,6 @@
-Первым делом Изучи Документацию и всю что нужно в этом репозитории - https://github.com/immisterio/Lampac
- и вот этот https://github.com/immisterio/Lampac/blob/main/Shared/Models/Templates/SeasonTpl.cs#L8
+Первым делом Изучи Документацию
+https://github.com/immisterio/Lampac
+https://github.com/immisterio/Lampac/blob/main/Shared/Models/Templates/SeasonTpl.cs
+https://github.com/immisterio/Lampac/blob/main/Shared/Models/Templates/
+
+ 
