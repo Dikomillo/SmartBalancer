@@ -9,6 +9,12 @@
         progressKey: null,
         progressHost: null,
         cachedData: null,
+        metadata: null,
+        metadataTtl: 5 * 60 * 1000,
+        autoCloseTimer: null,
+        interactionHandler: null,
+        lastProgressState: null,
+        progressReady: false,
         originalOpen: null,
         originalSend: null,
 
@@ -45,57 +51,207 @@
             style.textContent = `
                 .smartfilter-progress {
                     position: fixed;
-                    left: 20px;
-                    bottom: 20px;
-                    width: 280px;
-                    padding: 12px;
-                    border-radius: 8px;
-                    background: rgba(18, 18, 18, 0.92);
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    width: min(420px, 92vw);
+                    max-width: 480px;
+                    padding: 20px 22px;
+                    border-radius: 16px;
+                    background: rgba(14, 14, 14, 0.92);
+                    backdrop-filter: blur(12px);
                     color: #fff;
                     font-size: 13px;
                     z-index: 9999;
-                    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+                    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+                    opacity: 0;
+                    transform-origin: center;
+                    animation: smartfilter-fade-in 0.35s ease forwards;
+                }
+
+                .smartfilter-progress--closing {
+                    animation: smartfilter-fade-out 0.25s ease forwards;
+                }
+
+                .smartfilter-progress__header {
+                    display: flex;
+                    align-items: center;
+                    gap: 14px;
+                }
+
+                .smartfilter-progress__loader {
+                    width: 32px;
+                    height: 32px;
+                    border-radius: 50%;
+                    border: 3px solid rgba(255, 255, 255, 0.2);
+                    border-top-color: #5ce0a5;
+                    animation: smartfilter-spin 0.85s linear infinite;
+                }
+
+                .smartfilter-progress--ready .smartfilter-progress__loader {
+                    display: none;
+                }
+
+                .smartfilter-progress__titles {
+                    flex: 1;
+                    min-width: 0;
+                }
+
+                .smartfilter-progress__title {
+                    font-size: 16px;
+                    font-weight: 600;
+                    letter-spacing: 0.02em;
+                }
+
+                .smartfilter-progress__subtitle {
+                    margin-top: 2px;
+                    font-size: 12px;
+                    color: rgba(255, 255, 255, 0.65);
+                }
+
+                .smartfilter-progress__stats {
+                    display: flex;
+                    justify-content: space-between;
+                    gap: 8px;
+                    margin: 14px 0 10px;
+                    font-size: 12px;
+                    color: rgba(255, 255, 255, 0.75);
                 }
 
                 .smartfilter-progress__bar {
-                    height: 6px;
-                    border-radius: 4px;
-                    background: rgba(255, 255, 255, 0.15);
+                    position: relative;
+                    height: 8px;
+                    border-radius: 999px;
+                    background: rgba(255, 255, 255, 0.12);
                     overflow: hidden;
-                    margin-top: 8px;
                 }
 
                 .smartfilter-progress__bar-inner {
                     height: 100%;
                     width: 0;
-                    background: linear-gradient(90deg, #4CAF50 0%, #81C784 100%);
-                    transition: width 0.25s ease;
+                    background: linear-gradient(90deg, #4caf50 0%, #7b61ff 100%);
+                    background-size: 200% 100%;
+                    transition: width 0.35s ease;
+                    animation: smartfilter-progress-stripes 1.8s linear infinite;
+                }
+
+                .smartfilter-progress--ready .smartfilter-progress__bar-inner {
+                    animation: none;
                 }
 
                 .smartfilter-progress__providers {
-                    max-height: 180px;
+                    max-height: 220px;
                     overflow-y: auto;
-                    margin-top: 8px;
+                    margin-top: 16px;
+                    padding-right: 4px;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 8px;
                 }
 
                 .smartfilter-progress__provider {
                     display: flex;
-                    justify-content: space-between;
                     align-items: center;
-                    margin-top: 4px;
+                    justify-content: space-between;
+                    gap: 12px;
+                    padding: 10px 12px;
+                    border-radius: 12px;
+                    background: rgba(255, 255, 255, 0.04);
+                    border: 1px solid rgba(255, 255, 255, 0.06);
+                    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+                }
+
+                .smartfilter-progress__provider-meta {
+                    flex: 1;
+                    min-width: 0;
                 }
 
                 .smartfilter-progress__provider-name {
-                    flex: 1;
-                    margin-right: 6px;
+                    display: block;
+                    font-weight: 500;
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
+
+                .smartfilter-progress__provider-note {
+                    display: block;
+                    margin-top: 2px;
+                    font-size: 11px;
+                    color: rgba(255, 255, 255, 0.55);
                     white-space: nowrap;
                     overflow: hidden;
                     text-overflow: ellipsis;
                 }
 
                 .smartfilter-progress__provider-status {
+                    padding: 4px 10px;
+                    border-radius: 999px;
                     font-size: 11px;
-                    opacity: 0.75;
+                    font-weight: 600;
+                    text-transform: uppercase;
+                    letter-spacing: 0.05em;
+                }
+
+                .smartfilter-progress__provider-status--pending {
+                    background: rgba(158, 158, 158, 0.25);
+                    color: #f5f5f5;
+                }
+
+                .smartfilter-progress__provider-status--running {
+                    background: rgba(33, 150, 243, 0.22);
+                    color: #90caf9;
+                }
+
+                .smartfilter-progress__provider-status--completed {
+                    background: rgba(76, 175, 80, 0.22);
+                    color: #a5d6a7;
+                }
+
+                .smartfilter-progress__provider-status--empty {
+                    background: rgba(255, 193, 7, 0.22);
+                    color: #ffe082;
+                }
+
+                .smartfilter-progress__provider-status--error {
+                    background: rgba(244, 67, 54, 0.25);
+                    color: #ef9a9a;
+                }
+
+                .smartfilter-progress__hint {
+                    margin-top: 16px;
+                    font-size: 11px;
+                    text-align: center;
+                    color: rgba(255, 255, 255, 0.5);
+                }
+
+                .smartfilter-progress--ready .smartfilter-progress__hint {
+                    color: rgba(255, 255, 255, 0.68);
+                }
+
+                .smartfilter-progress__providers::-webkit-scrollbar {
+                    width: 6px;
+                }
+
+                .smartfilter-progress__providers::-webkit-scrollbar-track {
+                    background: transparent;
+                }
+
+                .smartfilter-progress__providers::-webkit-scrollbar-thumb {
+                    background: rgba(255, 255, 255, 0.2);
+                    border-radius: 4px;
+                }
+
+                .smartfilter-progress--ready {
+                    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+                }
+
+                .smartfilter-progress--ready .smartfilter-progress__title {
+                    color: #7bffb0;
+                }
+
+                .smartfilter-progress--ready .smartfilter-progress__bar {
+                    background: rgba(124, 252, 202, 0.18);
                 }
 
                 .smartfilter-sfilter-button {
@@ -166,6 +322,25 @@
                     background: linear-gradient(90deg, #2E7D32 0%, #4CAF50 100%) !important;
                     color: #fff !important;
                 }
+
+                @keyframes smartfilter-spin {
+                    to { transform: rotate(360deg); }
+                }
+
+                @keyframes smartfilter-progress-stripes {
+                    0% { background-position: 0% 0; }
+                    100% { background-position: -200% 0; }
+                }
+
+                @keyframes smartfilter-fade-in {
+                    from { opacity: 0; transform: translate(-50%, -52%) scale(0.95); }
+                    to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+                }
+
+                @keyframes smartfilter-fade-out {
+                    from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+                    to { opacity: 0; transform: translate(-50%, -52%) scale(0.95); }
+                }
             `;
             document.head.appendChild(style);
         },
@@ -229,21 +404,35 @@
             this.originalSend = XMLHttpRequest.prototype.send;
 
             XMLHttpRequest.prototype.open = function (method, url) {
-                this.__smartfilter_url = typeof url === 'string' ? url : (url && url.toString()) || '';
+                let finalUrl = url;
+                if (typeof url === 'string')
+                    finalUrl = SmartFilter.prepareRequestUrl(url);
+
+                const args = Array.from(arguments);
+                args[1] = finalUrl;
+
+                this.__smartfilter_url = typeof finalUrl === 'string' ? finalUrl : (finalUrl && finalUrl.toString()) || '';
                 this.__smartfilter_isTarget = SmartFilter.isSmartFilterRequest(this.__smartfilter_url);
                 this.__smartfilter_method = method;
-                return SmartFilter.originalOpen.apply(this, arguments);
+
+                return SmartFilter.originalOpen.apply(this, args);
             };
 
             XMLHttpRequest.prototype.send = function () {
-                if (this.__smartfilter_isTarget) {
+                if (this.__smartfilter_isTarget)
                     SmartFilter.handleRequestStart(this);
-                    this.addEventListener('readystatechange', function () {
-                        if (this.readyState === 4) {
-                            SmartFilter.handleRequestComplete(this);
-                        }
-                    });
-                }
+
+                const onReadyStateChange = function () {
+                    if (this.readyState !== 4)
+                        return;
+
+                    SmartFilter.captureMetadata(this);
+
+                    if (this.__smartfilter_isTarget)
+                        SmartFilter.handleRequestComplete(this);
+                };
+
+                this.addEventListener('readystatechange', onReadyStateChange);
 
                 return SmartFilter.originalSend.apply(this, arguments);
             };
@@ -258,13 +447,19 @@
             this.progressHost = info.origin;
             this.progressKey = info.progressKey;
             this.cachedData = null;
+            this.lastProgressState = null;
+            this.progressReady = false;
+            this.cancelAutoClose();
+            this.hideProgress(true);
             this.updateFilterButtonState(false);
             this.startProgress();
         },
 
         handleRequestComplete(xhr) {
             this.stopProgress();
-            this.renderProgress(null);
+
+            if (!this.lastProgressState || !this.lastProgressState.ready)
+                this.hideProgress(true);
 
             try {
                 if (!xhr.responseText)
@@ -303,12 +498,271 @@
             }
         },
 
+        prepareRequestUrl(url) {
+            if (typeof url !== 'string' || !this.isSmartFilterRequest(url))
+                return url;
+
+            const metadata = this.getFreshMetadata();
+            if (!metadata)
+                return url;
+
+            try {
+                const targetUrl = new URL(url, window.location.origin);
+                const search = targetUrl.searchParams;
+
+                if ((!search.has('kinopoisk_id') || parseInt(search.get('kinopoisk_id'), 10) <= 0) && metadata.kinopoisk_id)
+                    search.set('kinopoisk_id', metadata.kinopoisk_id);
+
+                if (!search.get('imdb_id') && metadata.imdb_id)
+                    search.set('imdb_id', metadata.imdb_id);
+
+                if ((!search.has('title') || !search.get('title')) && metadata.title)
+                    search.set('title', metadata.title);
+
+                if ((!search.has('original_title') || !search.get('original_title')) && metadata.original_title)
+                    search.set('original_title', metadata.original_title);
+
+                if ((!search.has('year') || search.get('year') === '0') && metadata.year)
+                    search.set('year', String(metadata.year));
+
+                if (typeof metadata.serial === 'number' && (!search.has('serial') || search.get('serial') === '-1'))
+                    search.set('serial', String(metadata.serial));
+
+                return targetUrl.toString();
+            } catch (err) {
+                return url;
+            }
+        },
+
+        getFreshMetadata() {
+            if (!this.metadata)
+                return null;
+
+            if (!this.metadata.timestamp || (Date.now() - this.metadata.timestamp) > this.metadataTtl) {
+                this.metadata = null;
+                return null;
+            }
+
+            return this.metadata;
+        },
+
+        captureMetadata(xhr) {
+            if (!xhr)
+                return;
+
+            const responseType = xhr.responseType;
+            if (responseType && responseType !== '' && responseType !== 'text' && responseType !== 'json')
+                return;
+
+            let payload = null;
+
+            try {
+                if (responseType === 'json' && xhr.response) {
+                    payload = xhr.response;
+                } else {
+                    const text = xhr.responseText;
+                    if (!text)
+                        return;
+
+                    const trimmed = text.trim();
+                    if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '['))
+                        return;
+
+                    payload = JSON.parse(trimmed);
+                }
+            } catch (err) {
+                return;
+            }
+
+            const meta = this.extractMetadata(payload);
+            if (meta)
+                this.updateMetadata(meta);
+        },
+
+        extractMetadata(payload) {
+            if (!payload || typeof payload !== 'object')
+                return null;
+
+            const meta = {};
+            const stack = [payload];
+            const seen = new WeakSet();
+
+            while (stack.length) {
+                const current = stack.pop();
+                if (!current || typeof current !== 'object')
+                    continue;
+
+                if (seen.has(current))
+                    continue;
+
+                seen.add(current);
+
+                if (Array.isArray(current)) {
+                    for (const item of current)
+                        stack.push(item);
+                    continue;
+                }
+
+                for (const [key, value] of Object.entries(current)) {
+                    if (value === null || value === undefined)
+                        continue;
+
+                    const lower = key.toLowerCase();
+
+                    if (lower === 'kinopoisk_id' || lower === 'kp_id' || lower === 'kinopoiskid') {
+                        const num = this.parsePositiveInt(value);
+                        if (num)
+                            meta.kinopoisk_id = num;
+                    } else if (lower === 'imdb_id' || lower === 'imdb') {
+                        const imdb = this.normalizeImdbId(value);
+                        if (imdb)
+                            meta.imdb_id = imdb;
+                    } else if (lower === 'title' || lower === 'name' || lower === 'ru_title') {
+                        const textValue = this.normalizeText(value);
+                        if (textValue)
+                            meta.title ??= textValue;
+                    } else if (lower === 'original_title' || lower === 'originalname' || lower === 'original_name' || lower === 'orig_title') {
+                        const original = this.normalizeText(value);
+                        if (original)
+                            meta.original_title ??= original;
+                    } else if (lower === 'year') {
+                        const year = this.parsePositiveInt(value, 4);
+                        if (year)
+                            meta.year ??= year;
+                    } else if (lower === 'release_date' || lower === 'first_air_date' || lower === 'air_date' || lower === 'premiere_ru' || lower === 'premiere_world') {
+                        const parsedYear = this.parseYearFromDate(value);
+                        if (parsedYear)
+                            meta.year ??= parsedYear;
+                    } else if (lower === 'is_serial' || lower === 'serial' || lower === 'season_count' || lower === 'seasons') {
+                        const serial = this.parseSerialFlag(lower, value);
+                        if (serial !== null)
+                            meta.serial = serial;
+                    } else if (lower === 'type' || lower === 'content_type' || lower === 'category') {
+                        const serial = this.parseSerialFromType(value);
+                        if (serial !== null)
+                            meta.serial = serial;
+                    }
+
+                    if (value && typeof value === 'object')
+                        stack.push(value);
+                }
+            }
+
+            if (!Object.keys(meta).length)
+                return null;
+
+            return meta;
+        },
+
+        updateMetadata(meta) {
+            if (!meta || !Object.keys(meta).length)
+                return;
+
+            const existing = this.getFreshMetadata() || {};
+
+            const next = {
+                timestamp: Date.now(),
+                kinopoisk_id: meta.kinopoisk_id || existing.kinopoisk_id,
+                imdb_id: meta.imdb_id || existing.imdb_id,
+                title: meta.title || existing.title,
+                original_title: meta.original_title || existing.original_title,
+                year: meta.year || existing.year,
+                serial: meta.serial !== undefined ? meta.serial : existing.serial
+            };
+
+            this.metadata = next;
+        },
+
+        parsePositiveInt(value, digits = 0) {
+            const num = Number.parseInt(value, 10);
+            if (!Number.isFinite(num) || num <= 0)
+                return null;
+
+            if (digits && num.toString().length < digits)
+                return null;
+
+            return num;
+        },
+
+        parseYearFromDate(value) {
+            if (!value)
+                return null;
+
+            const match = value.toString().match(/\d{4}/);
+            if (!match)
+                return null;
+
+            return this.parsePositiveInt(match[0], 4);
+        },
+
+        parseSerialFlag(key, value) {
+            if (value === null || value === undefined)
+                return null;
+
+            if (typeof value === 'boolean')
+                return value ? 1 : 0;
+
+            if (typeof value === 'number')
+                return value > 0 ? 1 : 0;
+
+            const str = value.toString().toLowerCase();
+
+            if (key === 'season_count' || key === 'seasons') {
+                const num = Number.parseInt(str, 10);
+                if (Number.isFinite(num))
+                    return num > 0 ? 1 : 0;
+            }
+
+            if (str === 'true' || str === 'serial' || str === 'tv' || str === 'show' || str === 'yes')
+                return 1;
+            if (str === 'false' || str === 'movie' || str === 'no')
+                return 0;
+
+            return null;
+        },
+
+        parseSerialFromType(value) {
+            if (!value)
+                return null;
+
+            const str = value.toString().toLowerCase();
+
+            if (/serial|series|tv|show|episode|anime/.test(str))
+                return 1;
+            if (/movie|film|documovie/.test(str))
+                return 0;
+
+            return null;
+        },
+
+        normalizeText(value) {
+            if (value === null || value === undefined)
+                return '';
+
+            return value.toString().trim();
+        },
+
+        normalizeImdbId(value) {
+            if (value === null || value === undefined)
+                return '';
+
+            const str = value.toString().trim();
+            if (!str)
+                return '';
+
+            const match = str.match(/tt\d+/i);
+            return match ? match[0].toLowerCase() : '';
+        },
+
         startProgress() {
             if (!this.progressKey || !this.progressHost)
                 return;
 
-            this.renderProgress({ ready: false, progress: 0, providers: [] });
             this.stopProgress();
+            this.progressReady = false;
+            this.lastProgressState = { ready: false };
+            this.cancelAutoClose();
+            this.renderProgress({ ready: false, progress: 0, providers: [] });
 
             const pull = () => {
                 const url = `${this.progressHost}/lite/smartfilter/progress?key=${encodeURIComponent(this.progressKey)}`;
@@ -337,44 +791,223 @@
         },
 
         renderProgress(data) {
-            let container = document.querySelector('.smartfilter-progress');
             if (!data) {
-                if (container)
-                    container.remove();
+                this.hideProgress(true);
                 return;
             }
 
+            let container = document.querySelector('.smartfilter-progress');
             if (!container) {
                 container = document.createElement('div');
                 container.className = 'smartfilter-progress';
                 document.body.appendChild(container);
             }
 
+            container.classList.remove('smartfilter-progress--closing');
+
             const total = data.total || data.Total || 0;
+            const completed = data.completed || data.Completed || 0;
             const progress = data.progress || data.ProgressPercentage || data.Progress || 0;
+            const progressValue = Math.max(0, Math.min(100, progress));
             const items = data.items || data.Items || 0;
             const providersRaw = data.providers || data.Providers || [];
             const providers = Array.isArray(providersRaw) ? providersRaw : [];
+            const ready = Boolean(data.ready || data.Ready);
 
             const providerRows = providers.map((provider) => {
                 const status = provider.status || provider.Status || 'pending';
                 const name = provider.name || provider.Name || 'Провайдер';
-                return `<div class="smartfilter-progress__provider">
-                    <span class="smartfilter-progress__provider-name">${name}</span>
-                    <span class="smartfilter-progress__provider-status">${status}</span>
+                const itemsCount = provider.items ?? provider.Items ?? 0;
+                const responseTime = provider.responseTime ?? provider.ResponseTime ?? 0;
+                const error = provider.error || provider.Error || '';
+                const info = this.describeStatus(status, itemsCount, error, responseTime);
+                const statusClass = `smartfilter-progress__provider-status--${info.className}`;
+                const providerClass = `smartfilter-progress__provider smartfilter-progress__provider--${info.className}`;
+                const note = info.note ? `<span class="smartfilter-progress__provider-note">${this.escapeHtml(info.note)}</span>` : '';
+
+                return `<div class="${providerClass}">
+                    <div class="smartfilter-progress__provider-meta">
+                        <span class="smartfilter-progress__provider-name">${this.escapeHtml(name)}</span>
+                        ${note}
+                    </div>
+                    <span class="smartfilter-progress__provider-status ${statusClass}">${this.escapeHtml(info.label)}</span>
                 </div>`;
             }).join('');
 
+            const summarySubtitle = ready
+                ? 'Загрузка завершена'
+                : (total > 0 ? `Обработано ${completed}/${total}` : 'Собираем источники...');
+
+            const hint = ready
+                ? 'Нажмите любую кнопку или подождите 5 секунд, чтобы закрыть'
+                : 'Можно продолжать пользоваться приложением — сбор идёт в фоне';
+
+            const providersHtml = providerRows || `<div class="smartfilter-progress__provider smartfilter-progress__provider--pending">
+                    <div class="smartfilter-progress__provider-meta">
+                        <span class="smartfilter-progress__provider-name">Подключаем источники…</span>
+                    </div>
+                    <span class="smartfilter-progress__provider-status smartfilter-progress__provider-status--pending">Ожидание</span>
+                </div>`;
+
             container.innerHTML = `
-                <div><strong>SmartFilter</strong></div>
-                <div>Источников: ${total} • Найдено ссылок: ${items}</div>
-                <div class="smartfilter-progress__bar"><div class="smartfilter-progress__bar-inner" style="width:${progress}%"></div></div>
-                <div class="smartfilter-progress__providers">${providerRows}</div>
+                <div class="smartfilter-progress__header">
+                    <div class="smartfilter-progress__loader"></div>
+                    <div class="smartfilter-progress__titles">
+                        <div class="smartfilter-progress__title">SmartFilter</div>
+                        <div class="smartfilter-progress__subtitle">${this.escapeHtml(summarySubtitle)}</div>
+                    </div>
+                </div>
+                <div class="smartfilter-progress__stats">
+                    <span>Источников: ${total}</span>
+                    <span>Найдено ссылок: ${items}</span>
+                </div>
+                <div class="smartfilter-progress__bar"><div class="smartfilter-progress__bar-inner" style="width:${progressValue}%"></div></div>
+                <div class="smartfilter-progress__providers">${providersHtml}</div>
+                <div class="smartfilter-progress__hint">${this.escapeHtml(hint)}</div>
             `;
 
-            if (data.ready || data.Ready) {
-                setTimeout(() => container.remove(), 2500);
+            container.classList.toggle('smartfilter-progress--ready', ready);
+
+            if (ready) {
+                this.progressReady = true;
+                this.scheduleAutoClose(true);
+            } else {
+                this.progressReady = false;
+                this.cancelAutoClose();
             }
+
+            this.lastProgressState = { ready, total, completed, items };
+        },
+
+        scheduleAutoClose(forceRestart = false) {
+            if (this.autoCloseTimer && !forceRestart)
+                return;
+
+            if (this.autoCloseTimer)
+                clearTimeout(this.autoCloseTimer);
+
+            this.attachInteractionClose();
+            this.autoCloseTimer = setTimeout(() => this.hideProgress(), 5000);
+        },
+
+        cancelAutoClose() {
+            if (this.autoCloseTimer) {
+                clearTimeout(this.autoCloseTimer);
+                this.autoCloseTimer = null;
+            }
+
+            this.clearInteractionClose();
+        },
+
+        attachInteractionClose() {
+            if (this.interactionHandler)
+                return;
+
+            const handler = () => {
+                this.hideProgress();
+            };
+
+            this.interactionHandler = handler;
+            ['click', 'wheel', 'keydown', 'touchstart'].forEach((eventName) => {
+                window.addEventListener(eventName, handler, { passive: true });
+            });
+        },
+
+        clearInteractionClose() {
+            if (!this.interactionHandler)
+                return;
+
+            const handler = this.interactionHandler;
+            ['click', 'wheel', 'keydown', 'touchstart'].forEach((eventName) => {
+                window.removeEventListener(eventName, handler);
+            });
+
+            this.interactionHandler = null;
+        },
+
+        hideProgress(immediate = false) {
+            const container = document.querySelector('.smartfilter-progress');
+            this.cancelAutoClose();
+            this.progressReady = false;
+            this.lastProgressState = null;
+
+            if (!container)
+                return;
+
+            if (immediate) {
+                container.remove();
+            } else {
+                container.classList.add('smartfilter-progress--closing');
+                setTimeout(() => {
+                    if (container.parentElement)
+                        container.remove();
+                }, 250);
+            }
+        },
+
+        escapeHtml(value) {
+            if (value === null || value === undefined)
+                return '';
+
+            return String(value).replace(/[&<>"']/g, (char) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            })[char]);
+        },
+
+        truncateText(value, maxLength = 120) {
+            if (value === null || value === undefined)
+                return '';
+
+            const text = String(value).trim();
+            if (text.length <= maxLength)
+                return text;
+
+            return text.slice(0, maxLength - 1) + '…';
+        },
+
+        pluralize(number, forms) {
+            if (!Array.isArray(forms) || forms.length < 3)
+                return forms && forms.length ? forms[0] : '';
+
+            const n = Math.abs(Number(number)) % 100;
+            const n1 = n % 10;
+
+            if (n > 10 && n < 20)
+                return forms[2];
+            if (n1 > 1 && n1 < 5)
+                return forms[1];
+            if (n1 === 1)
+                return forms[0];
+            return forms[2];
+        },
+
+        describeStatus(status, items, error, responseTime) {
+            const normalized = (status || '').toString().toLowerCase();
+            const map = {
+                pending: { label: 'Ожидание', className: 'pending', note: 'В очереди' },
+                running: { label: 'Загрузка', className: 'running', note: responseTime > 0 ? `${responseTime} мс` : 'Ожидаем ответ' },
+                completed: { label: 'Готово', className: 'completed' },
+                empty: { label: 'Пусто', className: 'empty', note: 'Результатов нет' },
+                error: { label: 'Ошибка', className: 'error' }
+            };
+
+            const info = map[normalized] || map.pending;
+            let note = info.note || '';
+
+            if (normalized === 'completed') {
+                if (items > 0)
+                    note = `${items} ${this.pluralize(items, ['ссылка', 'ссылки', 'ссылок'])}`;
+                else
+                    note = 'Новых ссылок нет';
+            } else if (normalized === 'error') {
+                note = error ? this.truncateText(error, 80) : 'Ошибка загрузки';
+            }
+
+            return { label: info.label, className: info.className, note };
         },
 
         updateFilterButtonState(enabled) {
@@ -434,8 +1067,8 @@
                 modal.querySelectorAll('.smartfilter-chip').forEach((chip) => chip.classList.remove('active'));
             });
             modal.querySelector('#smartfilter-apply').addEventListener('click', () => {
-                const selectedVoices = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="voice"].active')).map((chip) => chip.dataset.value);
-                const selectedQuality = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="quality"].active')).map((chip) => chip.dataset.value);
+                const selectedVoices = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="voice"].active')).map((chipEl) => chipEl.dataset.value);
+                const selectedQuality = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="quality"].active')).map((chipEl) => chipEl.dataset.value);
                 this.applyFilters(selectedVoices, selectedQuality);
                 modal.remove();
             });
