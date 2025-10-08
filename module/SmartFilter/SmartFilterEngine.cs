@@ -86,6 +86,7 @@ namespace SmartFilter
         public async Task<AggregationResult> AggregateProvidersAsync(string imdbId, long kinopoiskId, string title, string originalTitle, int year, int serial, string originalLanguage, string providerFilter, int requestedSeason, string progressKey)
         {
             var baseQuery = BuildBaseQueryParameters(imdbId, kinopoiskId, title, originalTitle, year, serial, originalLanguage);
+            NormalizeSeasonQuery(baseQuery, serial, requestedSeason);
             var providers = await GetActiveProvidersAsync(baseQuery, serial);
 
             if (!string.IsNullOrWhiteSpace(providerFilter))
@@ -127,6 +128,7 @@ namespace SmartFilter
         private async Task<List<ProviderDescriptor>> GetActiveProvidersAsync(Dictionary<string, string> baseQuery, int serial)
         {
             var providers = new List<ProviderDescriptor>();
+            bool isAnimeRequest = IsAnimeRequest(baseQuery);
 
             try
             {
@@ -160,7 +162,7 @@ namespace SmartFilter
                     if (includeOnly.Count > 0 && !includeOnly.Contains(name))
                         continue;
 
-                    if (serial == 0 && IsAnimeProvider(name))
+                    if (serial == 0 && !isAnimeRequest && IsAnimeProvider(name))
                         continue;
 
                     providers.Add(new ProviderDescriptor
@@ -754,6 +756,24 @@ namespace SmartFilter
             return query;
         }
 
+        private static void NormalizeSeasonQuery(Dictionary<string, string> query, int serial, int requestedSeason)
+        {
+            if (query == null)
+                return;
+
+            if (serial == 1)
+            {
+                if (requestedSeason > 0)
+                    query["s"] = requestedSeason.ToString();
+                else
+                    query["s"] = "-1";
+            }
+            else if (requestedSeason <= 0)
+            {
+                query.Remove("s");
+            }
+        }
+
         internal static string BuildCacheKey(Dictionary<string, string> query)
         {
             var normalized = query
@@ -762,6 +782,27 @@ namespace SmartFilter
                 .Select(kv => $"{kv.Key}={kv.Value}");
 
             return "smartfilter:" + string.Join("&", normalized);
+        }
+
+        private static bool IsAnimeRequest(Dictionary<string, string> query)
+        {
+            if (query == null)
+                return false;
+
+            if (query.TryGetValue("original_language", out var language) && !string.IsNullOrWhiteSpace(language))
+            {
+                language = language.ToLowerInvariant();
+                if (language is "ja" or "zh")
+                    return true;
+            }
+
+            if (query.TryGetValue("rchtype", out var rchType) && !string.IsNullOrWhiteSpace(rchType))
+            {
+                if (string.Equals(rchType, "anime", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
 
         private static bool IsAnimeProvider(string providerName)
