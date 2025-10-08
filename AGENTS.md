@@ -3,4 +3,4 @@ https://github.com/immisterio/Lampac
 https://github.com/immisterio/Lampac/blob/main/Shared/Models/Templates/SeasonTpl.cs
 https://github.com/immisterio/Lampac/blob/main/Shared/Models/Templates/
 
- 
+ E:\REPO\SmartBalancer\Uaflix - только как пример!!
