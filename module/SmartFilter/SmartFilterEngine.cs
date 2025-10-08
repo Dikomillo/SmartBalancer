@@ -396,6 +396,10 @@ namespace SmartFilter
                     {
                         if (item is JObject obj)
                         {
+                            // Normalize season items to the shape Lampa expects
+                            if (string.Equals(expectedType, "season", StringComparison.OrdinalIgnoreCase))
+                                NormalizeSeasonItem(obj);
+
                             if (string.IsNullOrEmpty(obj.Value<string>("provider")))
                                 obj["provider"] = ResolveProviderName(result);
 
@@ -430,6 +434,9 @@ namespace SmartFilter
                 {
                     if (item is JObject obj)
                     {
+                        if (string.Equals(expectedType, "season", StringComparison.OrdinalIgnoreCase))
+                            NormalizeSeasonItem(obj);
+
                         if (string.IsNullOrEmpty(obj.Value<string>("provider")))
                             obj["provider"] = providerName;
 
@@ -448,6 +455,58 @@ namespace SmartFilter
                 return new JArray();
 
             return grouped;
+        }
+
+        private static void NormalizeSeasonItem(JObject obj)
+        {
+            if (obj == null)
+                return;
+
+            // Ensure id is set from season number if missing
+            if (!obj.TryGetValue("id", out var _) || obj["id"] == null || obj["id"].Type == JTokenType.Null)
+            {
+                var seasonToken = obj["season"] ?? obj["s"];
+                if (seasonToken != null)
+                {
+                    if (seasonToken.Type == JTokenType.Integer)
+                        obj["id"] = seasonToken.Value<int>();
+                    else if (int.TryParse(seasonToken.ToString(), out int seasonNum))
+                        obj["id"] = seasonNum;
+                }
+            }
+
+            // Ensure name
+            if (string.IsNullOrWhiteSpace(obj.Value<string>("name")))
+            {
+                // Prefer explicit season number
+                int seasonNum = 0;
+                var idToken = obj["id"];
+                if (idToken != null)
+                {
+                    if (idToken.Type == JTokenType.Integer)
+                        seasonNum = idToken.Value<int>();
+                    else
+                        int.TryParse(idToken.ToString(), out seasonNum);
+                }
+
+                var title = obj.Value<string>("title");
+                if (seasonNum > 0)
+                    obj["name"] = $"{seasonNum} сезон";
+                else if (!string.IsNullOrWhiteSpace(title))
+                    obj["name"] = title;
+            }
+
+            // Ensure method/url pair for Lampa navigation
+            if (string.IsNullOrWhiteSpace(obj.Value<string>("method")))
+                obj["method"] = "link";
+
+            // If url is missing but alternative keys exist, normalize to url
+            if (string.IsNullOrWhiteSpace(obj.Value<string>("url")))
+            {
+                var link = obj.Value<string>("link") ?? obj.Value<string>("file") ?? obj.Value<string>("stream") ?? obj.Value<string>("src");
+                if (!string.IsNullOrWhiteSpace(link))
+                    obj["url"] = link;
+            }
         }
 
         private JArray BuildProviderList(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
