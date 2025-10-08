@@ -47,10 +47,25 @@ namespace SmartFilter
             [FromQuery] int year = 0,
             [FromQuery] int serial = -1,
             [FromQuery] string original_language = null,
+            [FromQuery] string provider = null,
             [FromQuery] bool rjson = false)
         {
             try
             {
+                bool checkSearch = HttpContext.Request.Query.ContainsKey("checksearch");
+
+                if (checkSearch)
+                {
+                    var responseObject = new JObject
+                    {
+                        ["type"] = ResolveContentType(serial, provider),
+                        ["title"] = title ?? original_title ?? string.Empty,
+                        ["year"] = year
+                    };
+
+                    return Content(responseObject.ToString(Formatting.None), "application/json; charset=utf-8");
+                }
+
                 HttpContext.Response.Headers["X-Timeout"] = "300000";
 
                 var querySnapshot = BuildQueryDictionary(HttpContext.Request.Query);
@@ -61,14 +76,18 @@ namespace SmartFilter
                 var engine = new SmartFilterEngine(memoryCache, host, HttpContext);
                 var aggregation = await InvokeCache(cacheKey,
                     TimeSpan.FromMinutes(Math.Max(1, ModInit.conf.cacheTimeMinutes)),
-                    () => engine.AggregateProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language, requestedSeason, progressKey));
+                    () => engine.AggregateProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language, provider, requestedSeason, progressKey));
 
-                aggregation ??= new AggregationResult { Type = serial == 1 ? "season" : "movie", ProgressKey = progressKey };
+                aggregation ??= new AggregationResult
+                {
+                    Type = ResolveAggregationType(serial, provider, requestedSeason),
+                    ProgressKey = progressKey
+                };
                 aggregation.ProgressKey ??= progressKey;
 
                 SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
 
-                if (aggregation.Data == null || aggregation.Data.Count == 0)
+                if (IsEmpty(aggregation.Data))
                     return OnError("Контент не найден");
 
                 var providerStatus = aggregation.Providers
@@ -85,19 +104,37 @@ namespace SmartFilter
 
                 if (rjson)
                 {
+                    bool isSeries = string.Equals(aggregation.Type, "season", StringComparison.OrdinalIgnoreCase) || string.Equals(aggregation.Type, "episode", StringComparison.OrdinalIgnoreCase);
                     var responseObject = new JObject
                     {
                         ["type"] = aggregation.Type,
-                        ["data"] = aggregation.Data,
                         ["providers"] = JArray.FromObject(providerStatus),
                         ["progressKey"] = progressKey
                     };
+
+                    if (isSeries)
+                    {
+                        var (seriesData, voiceData, quality) = SeriesDataHelper.Unpack(aggregation.Data);
+                        responseObject["data"] = seriesData.DeepClone();
+                        responseObject["results"] = seriesData.DeepClone();
+
+                        if (voiceData != null)
+                            responseObject["voice"] = voiceData.DeepClone();
+
+                        if (!string.IsNullOrWhiteSpace(quality))
+                            responseObject["maxquality"] = quality;
+                    }
+                    else
+                    {
+                        responseObject["data"] = aggregation.Data ?? new JArray();
+                        responseObject["results"] = aggregation.Data ?? new JArray();
+                    }
 
                     return Content(responseObject.ToString(Formatting.None), "application/json; charset=utf-8");
                 }
                 else
                 {
-                    var html = ResponseRenderer.BuildHtml(aggregation.Type, aggregation.Data, title, original_title);
+                    var html = aggregation.Html ?? ResponseRenderer.BuildHtml(aggregation.Type, aggregation.Data, title, original_title);
                     if (string.IsNullOrEmpty(html))
                         return OnError("Контент не найден");
 
@@ -143,5 +180,50 @@ namespace SmartFilter
         }
 
         private bool IsAjaxRequest => HttpContext.Request.Headers["X-Requested-With"] == "XMLHttpRequest";
+
+        private static bool IsEmpty(JToken token)
+        {
+            if (token == null)
+                return true;
+
+            if (token is JArray array)
+                return array.Count == 0;
+
+            if (token is JObject obj)
+            {
+                foreach (var property in obj.Properties())
+                {
+                    if (property.Value is JArray nested && nested.Count > 0)
+                        return false;
+                }
+
+                return !obj.Properties().Any();
+            }
+
+            return !token.HasValues;
+        }
+
+        private static string ResolveContentType(int serial, string provider)
+        {
+            return serial switch
+            {
+                1 => string.IsNullOrWhiteSpace(provider) ? "similar" : "season",
+                2 => "episode",
+                _ => "movie"
+            };
+        }
+
+        private static string ResolveAggregationType(int serial, string provider, int requestedSeason)
+        {
+            if (serial == 1)
+            {
+                if (requestedSeason > 0)
+                    return "episode";
+
+                return string.IsNullOrWhiteSpace(provider) ? "similar" : "season";
+            }
+
+            return serial == 2 ? "episode" : "movie";
+        }
     }
 }

@@ -38,7 +38,8 @@ namespace SmartFilter
     public class AggregationResult
     {
         public string Type { get; set; }
-        public JArray Data { get; set; } = new JArray();
+        public JToken Data { get; set; }
+        public string Html { get; set; }
         public List<ProviderStatus> Providers { get; set; } = new List<ProviderStatus>();
         public string ProgressKey { get; set; }
     }
