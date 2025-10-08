@@ -367,7 +367,7 @@ namespace SmartFilter
                 return "Источник";
             }
 
-            bool groupByProvider = string.Equals(expectedType, "season", StringComparison.OrdinalIgnoreCase);
+            bool groupByProvider = false;
 
             if (!groupByProvider)
             {
