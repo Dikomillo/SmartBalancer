@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Caching.Memory;
 using Newtonsoft.Json.Linq;
+using Shared.Models;
+using Shared.Models.Templates;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -54,6 +56,37 @@ namespace SmartFilter
 
     public class SmartFilterEngine
     {
+        private sealed class SeasonEntry
+        {
+            public int? Number { get; init; }
+            public string Name { get; set; }
+            public string Link { get; init; }
+            public string Provider { get; init; }
+        }
+
+        private sealed class VoiceEntry
+        {
+            public string Name { get; init; }
+            public bool Active { get; init; }
+            public string Link { get; init; }
+            public string Provider { get; init; }
+        }
+
+        private sealed class EpisodeEntry
+        {
+            public int? Season { get; init; }
+            public int? Episode { get; init; }
+            public string Name { get; init; }
+            public string Link { get; init; }
+            public string Method { get; init; }
+            public string Stream { get; init; }
+            public string Translation { get; init; }
+            public string Provider { get; init; }
+            public JObject Headers { get; init; }
+            public int? HlsManifestTimeout { get; init; }
+            public string Quality { get; init; }
+        }
+
         private readonly IMemoryCache memoryCache;
         private readonly string host;
         private readonly HttpContext httpContext;
@@ -482,8 +515,8 @@ namespace SmartFilter
 
         private JToken BuildSeasonPayload(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
         {
-            var seasons = new List<JObject>();
-            var voices = new List<JObject>();
+            var seasons = new List<SeasonEntry>();
+            var voices = new List<VoiceEntry>();
             var seenSeasonLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var seenVoiceLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             string quality = null;
@@ -495,6 +528,7 @@ namespace SmartFilter
                     continue;
 
                 quality ??= ExtractQuality(result.Payload);
+                string providerName = ResolveProviderName(result);
 
                 foreach (var token in ExtractItems(result.Payload, "season"))
                 {
@@ -505,15 +539,22 @@ namespace SmartFilter
                         continue;
 
                     int? seasonNumber = ExtractSeasonNumber(seasonObj);
-                    string link = BuildSmartFilterUrl(baseQuery, ResolveProviderName(result), seasonNumber, currentTranslation);
+                    string link = BuildSmartFilterUrl(baseQuery, providerName, seasonNumber, currentTranslation);
                     if (!string.IsNullOrWhiteSpace(link))
                         seasonObj["url"] = link;
 
-                    var seasonLink = seasonObj.Value<string>("url") ?? seasonObj.Value<string>("link");
-                    if (!string.IsNullOrWhiteSpace(seasonLink) && !seenSeasonLinks.Add(seasonLink))
+                    string seasonLink = seasonObj.Value<string>("url") ?? seasonObj.Value<string>("link");
+                    if (string.IsNullOrWhiteSpace(seasonLink) || !seenSeasonLinks.Add(seasonLink))
                         continue;
 
-                    seasons.Add(seasonObj);
+                    string seasonName = seasonObj.Value<string>("name") ?? seasonObj.Value<string>("title") ?? string.Empty;
+                    seasons.Add(new SeasonEntry
+                    {
+                        Number = seasonNumber,
+                        Name = seasonName,
+                        Link = seasonLink,
+                        Provider = providerName
+                    });
                 }
 
                 foreach (var voiceToken in ExtractVoiceItems(result.Payload))
@@ -522,48 +563,78 @@ namespace SmartFilter
                     if (normalizedVoice == null)
                         continue;
 
-                    var voiceLink = normalizedVoice.Value<string>("url");
-                    if (!string.IsNullOrWhiteSpace(voiceLink) && !seenVoiceLinks.Add(voiceLink))
+                    string voiceLink = normalizedVoice.Value<string>("url");
+                    if (string.IsNullOrWhiteSpace(voiceLink) || !seenVoiceLinks.Add(voiceLink))
                         continue;
 
-                    voices.Add(normalizedVoice);
+                    voices.Add(new VoiceEntry
+                    {
+                        Name = normalizedVoice.Value<string>("name"),
+                        Active = normalizedVoice.Value<bool?>("active") ?? false,
+                        Link = voiceLink,
+                        Provider = providerName
+                    });
                 }
+            }
+
+            if (seasons.Count == 0)
+            {
+                if (voices.Count == 0 && string.IsNullOrWhiteSpace(quality))
+                    return CreateEmptySeriesPayload();
+
+                var voiceTpl = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
+                return CreateEmptySeriesPayloadWithVoice(voiceTpl, quality);
             }
 
             seasons.Sort((left, right) =>
             {
-                int leftSeason = ExtractSeasonNumber(left) ?? int.MaxValue;
-                int rightSeason = ExtractSeasonNumber(right) ?? int.MaxValue;
+                int leftSeason = left.Number ?? int.MaxValue;
+                int rightSeason = right.Number ?? int.MaxValue;
                 int compare = leftSeason.CompareTo(rightSeason);
                 if (compare != 0)
                     return compare;
 
-                return string.Compare(left.Value<string>("provider"), right.Value<string>("provider"), StringComparison.OrdinalIgnoreCase);
+                return string.Compare(left.Provider, right.Provider, StringComparison.OrdinalIgnoreCase);
             });
 
-            var payload = new JObject
+            var duplicateSeasonNumbers = seasons
+                .Where(i => i.Number.HasValue)
+                .GroupBy(i => i.Number.Value)
+                .Where(g => g.Select(v => v.Provider).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+                .Select(g => g.Key)
+                .ToHashSet();
+
+            var seasonTpl = string.IsNullOrWhiteSpace(quality)
+                ? new SeasonTpl(seasons.Count)
+                : new SeasonTpl(quality, seasons.Count);
+
+            foreach (var season in seasons)
             {
-                ["data"] = new JArray(seasons)
-            };
+                string displayName = season.Name;
 
-            if (voices.Count > 0)
-                payload["voice"] = new JArray(voices);
+                if (string.IsNullOrWhiteSpace(displayName))
+                    displayName = season.Number.HasValue ? $"{season.Number.Value} сезон" : season.Provider;
 
-            if (!string.IsNullOrWhiteSpace(quality))
-                payload["maxquality"] = quality;
+                if (!season.Number.HasValue || duplicateSeasonNumbers.Contains(season.Number.Value))
+                    displayName = CombineNameWithProvider(displayName, season.Provider);
 
-            return payload;
+                seasonTpl.Append(displayName, season.Link, season.Number?.ToString() ?? string.Empty);
+            }
+
+            var voiceTemplate = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
+            return ParseTemplateJson(seasonTpl.ToJson(voiceTemplate));
         }
 
         private JToken BuildEpisodePayload(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
         {
-            var episodes = new List<JObject>();
-            var voices = new List<JObject>();
+            var episodes = new List<EpisodeEntry>();
+            var voices = new List<VoiceEntry>();
             var seenEpisodeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var seenVoiceLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             string quality = null;
             string currentTranslation = GetCurrentTranslation(baseQuery);
             int? requestedSeason = GetRequestedSeason(baseQuery);
+            string baseTitle = ResolveSeriesTitle(baseQuery);
 
             foreach (var result in providerResults)
             {
@@ -571,6 +642,7 @@ namespace SmartFilter
                     continue;
 
                 quality ??= ExtractQuality(result.Payload);
+                string providerName = ResolveProviderName(result);
 
                 foreach (var voiceToken in ExtractVoiceItems(result.Payload))
                 {
@@ -578,11 +650,17 @@ namespace SmartFilter
                     if (normalizedVoice == null)
                         continue;
 
-                    var voiceLink = normalizedVoice.Value<string>("url");
-                    if (!string.IsNullOrWhiteSpace(voiceLink) && !seenVoiceLinks.Add(voiceLink))
+                    string voiceLink = normalizedVoice.Value<string>("url");
+                    if (string.IsNullOrWhiteSpace(voiceLink) || !seenVoiceLinks.Add(voiceLink))
                         continue;
 
-                    voices.Add(normalizedVoice);
+                    voices.Add(new VoiceEntry
+                    {
+                        Name = normalizedVoice.Value<string>("name"),
+                        Active = normalizedVoice.Value<bool?>("active") ?? false,
+                        Link = voiceLink,
+                        Provider = providerName
+                    });
                 }
 
                 foreach (var token in ExtractItems(result.Payload, "episode"))
@@ -593,43 +671,82 @@ namespace SmartFilter
                     if (!NormalizeEpisodeItem(episodeObj, result))
                         continue;
 
-                    var key = BuildEpisodeKey(episodeObj);
+                    string key = BuildEpisodeKey(episodeObj);
                     if (!string.IsNullOrWhiteSpace(key) && !seenEpisodeKeys.Add(key))
                         continue;
 
-                    episodes.Add(episodeObj);
+                    episodes.Add(new EpisodeEntry
+                    {
+                        Season = episodeObj.Value<int?>("s") ?? episodeObj.Value<int?>("season"),
+                        Episode = episodeObj.Value<int?>("e") ?? episodeObj.Value<int?>("episode"),
+                        Name = episodeObj.Value<string>("name") ?? episodeObj.Value<string>("title"),
+                        Link = episodeObj.Value<string>("url"),
+                        Method = episodeObj.Value<string>("method"),
+                        Stream = episodeObj.Value<string>("stream") ?? episodeObj.Value<string>("streamlink"),
+                        Translation = episodeObj.Value<string>("translate") ?? episodeObj.Value<string>("voice_name") ?? episodeObj.Value<string>("voice") ?? episodeObj.Value<string>("details"),
+                        Provider = providerName,
+                        Headers = episodeObj["headers"] as JObject,
+                        HlsManifestTimeout = episodeObj.Value<int?>("hls_manifest_timeout"),
+                        Quality = episodeObj.Value<string>("quality") ?? episodeObj.Value<string>("maxquality")
+                    });
                 }
+            }
+
+            if (episodes.Count == 0)
+            {
+                var voiceTpl = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
+                return CreateEmptySeriesPayloadWithVoice(voiceTpl, quality);
             }
 
             episodes.Sort((left, right) =>
             {
-                int leftSeason = left.Value<int?>("s") ?? left.Value<int?>("season") ?? int.MaxValue;
-                int rightSeason = right.Value<int?>("s") ?? right.Value<int?>("season") ?? int.MaxValue;
+                int leftSeason = left.Season ?? int.MaxValue;
+                int rightSeason = right.Season ?? int.MaxValue;
                 int compare = leftSeason.CompareTo(rightSeason);
                 if (compare != 0)
                     return compare;
 
-                int leftEpisode = left.Value<int?>("e") ?? left.Value<int?>("episode") ?? int.MaxValue;
-                int rightEpisode = right.Value<int?>("e") ?? right.Value<int?>("episode") ?? int.MaxValue;
+                int leftEpisode = left.Episode ?? int.MaxValue;
+                int rightEpisode = right.Episode ?? int.MaxValue;
                 compare = leftEpisode.CompareTo(rightEpisode);
                 if (compare != 0)
                     return compare;
 
-                return string.Compare(left.Value<string>("provider"), right.Value<string>("provider"), StringComparison.OrdinalIgnoreCase);
+                return string.Compare(left.Provider, right.Provider, StringComparison.OrdinalIgnoreCase);
             });
 
-            var payload = new JObject
+            var voiceTemplate = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
+            var episodeTpl = new EpisodeTpl(episodes.Count);
+
+            foreach (var episode in episodes)
             {
-                ["data"] = new JArray(episodes)
-            };
+                string seasonValue = episode.Season?.ToString() ?? string.Empty;
+                string episodeValue = episode.Episode?.ToString() ?? string.Empty;
+                string name = string.IsNullOrWhiteSpace(episode.Name) && episode.Episode.HasValue
+                    ? $"{episode.Episode.Value} серия"
+                    : episode.Name ?? "Серия";
+                string method = string.IsNullOrWhiteSpace(episode.Method) ? "play" : episode.Method;
+                string voiceName = BuildVoiceLabel(episode.Translation, episode.Provider, episode.Quality);
+                var headers = ConvertHeaders(episode.Headers);
 
-            if (voices.Count > 0)
-                payload["voice"] = new JArray(voices);
+                episodeTpl.Append(
+                    name,
+                    string.IsNullOrWhiteSpace(baseTitle) ? episode.Provider : baseTitle,
+                    seasonValue,
+                    episodeValue,
+                    episode.Link,
+                    method,
+                    streamlink: episode.Stream,
+                    voice_name: voiceName,
+                    headers: headers,
+                    hls_manifest_timeout: episode.HlsManifestTimeout);
+            }
 
-            if (!string.IsNullOrWhiteSpace(quality))
-                payload["maxquality"] = quality;
+            var resultToken = ParseTemplateJson(episodeTpl.ToJson(voiceTemplate));
+            if (!string.IsNullOrWhiteSpace(quality) && resultToken is JObject obj)
+                obj["maxquality"] = quality;
 
-            return payload;
+            return resultToken;
         }
 
         private static JObject CreateEmptySeriesPayload()
@@ -638,6 +755,141 @@ namespace SmartFilter
             {
                 ["data"] = new JArray()
             };
+        }
+
+        private static JToken CreateEmptySeriesPayloadWithVoice(VoiceTpl? voiceTpl, string quality)
+        {
+            var payload = CreateEmptySeriesPayload();
+
+            if (voiceTpl.HasValue)
+            {
+                var data = voiceTpl.Value.data;
+                if (data != null && data.Count > 0)
+                {
+                    var voiceJson = voiceTpl.Value.ToJson();
+                    if (!string.IsNullOrWhiteSpace(voiceJson))
+                        payload["voice"] = JToken.Parse(voiceJson);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(quality))
+                payload["maxquality"] = quality;
+
+            return payload;
+        }
+
+        private static VoiceTpl BuildVoiceTemplate(List<VoiceEntry> voices)
+        {
+            if (voices == null)
+                return new VoiceTpl();
+
+            var duplicates = voices
+                .Where(v => !string.IsNullOrWhiteSpace(v.Name))
+                .GroupBy(v => v.Name, StringComparer.OrdinalIgnoreCase)
+                .Where(g => g.Select(x => x.Provider).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+                .Select(g => g.Key)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var tpl = new VoiceTpl(voices.Count);
+
+            foreach (var voice in voices)
+            {
+                string baseName = string.IsNullOrWhiteSpace(voice.Name) ? voice.Provider : voice.Name;
+                string key = baseName ?? string.Empty;
+                string displayName = baseName;
+
+                if (string.IsNullOrWhiteSpace(displayName))
+                    displayName = voice.Provider;
+
+                if (string.IsNullOrWhiteSpace(displayName) || duplicates.Contains(key))
+                    displayName = CombineNameWithProvider(displayName, voice.Provider);
+
+                tpl.Append(displayName, voice.Active, voice.Link);
+            }
+
+            return tpl;
+        }
+
+        private static string CombineNameWithProvider(string baseName, string provider)
+        {
+            if (string.IsNullOrWhiteSpace(provider))
+                return baseName ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(baseName))
+                return provider;
+
+            if (baseName.IndexOf(provider, StringComparison.OrdinalIgnoreCase) >= 0)
+                return baseName;
+
+            return $"{baseName} • {provider}";
+        }
+
+        private static string BuildVoiceLabel(string translation, string provider, string quality)
+        {
+            var parts = new List<string>();
+
+            void Add(string value)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    value = value.Trim();
+                    if (parts.All(p => !string.Equals(p, value, StringComparison.OrdinalIgnoreCase)))
+                        parts.Add(value);
+                }
+            }
+
+            Add(translation);
+            Add(quality);
+
+            if (!string.IsNullOrWhiteSpace(provider) && parts.All(p => !string.Equals(p, provider, StringComparison.OrdinalIgnoreCase)))
+                parts.Add(provider.Trim());
+
+            if (parts.Count == 0)
+                return provider;
+
+            return string.Join(" • ", parts);
+        }
+
+        private static string ResolveSeriesTitle(Dictionary<string, string> baseQuery)
+        {
+            if (baseQuery == null)
+                return string.Empty;
+
+            if (baseQuery.TryGetValue("title", out var title) && !string.IsNullOrWhiteSpace(title))
+                return title;
+
+            if (baseQuery.TryGetValue("original_title", out var original) && !string.IsNullOrWhiteSpace(original))
+                return original;
+
+            return string.Empty;
+        }
+
+        private static List<HeadersModel> ConvertHeaders(JObject headersObj)
+        {
+            if (headersObj == null)
+                return null;
+
+            var dict = headersObj.Properties()
+                .Select(p => new { p.Name, Value = p.Value?.ToString() ?? string.Empty })
+                .Where(p => !string.IsNullOrWhiteSpace(p.Name))
+                .ToDictionary(p => p.Name, p => p.Value, StringComparer.OrdinalIgnoreCase);
+
+            return dict.Count == 0 ? null : HeadersModel.Init(dict);
+        }
+
+        private static JToken ParseTemplateJson(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return new JArray();
+
+            try
+            {
+                return JToken.Parse(json);
+            }
+            catch
+            {
+                return new JArray();
+            }
         }
 
         private bool NormalizeEpisodeItem(JObject obj, ProviderFetchResult source)
@@ -1080,10 +1332,10 @@ namespace SmartFilter
             return true;
         }
 
-        private JArray BuildProviderList(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
+        private JToken BuildProviderList(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
         {
-            var list = new JArray();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var entries = new List<(string Title, string Year, string Details, string Url, string Provider)>();
 
             foreach (var result in providerResults.OrderBy(r => r.ProviderIndex ?? int.MaxValue).ThenBy(r => ResolveProviderName(r)))
             {
@@ -1104,28 +1356,33 @@ namespace SmartFilter
 
                 string url = QueryHelpers.AddQueryString($"{host}/lite/smartfilter", providerQuery);
 
-                var item = new JObject
-                {
-                    ["id"] = result.ProviderIndex ?? list.Count + 1,
-                    ["method"] = "link",
-                    ["url"] = url,
-                    ["title"] = providerName,
-                    ["provider"] = providerName
-                };
-
-                if (baseQuery.TryGetValue("year", out var yearValue) && int.TryParse(yearValue, out var parsedYear))
-                    item["year"] = parsedYear;
-                else
-                    item["year"] = 0;
+                string year = null;
+                if (baseQuery.TryGetValue("year", out var yearValue) && int.TryParse(yearValue, out var parsedYear) && parsedYear > 0)
+                    year = parsedYear.ToString();
 
                 string details = BuildProviderDetails(result);
-                if (!string.IsNullOrWhiteSpace(details))
-                    item["details"] = details;
 
-                list.Add(item);
+                entries.Add((providerName, year, details, url, providerName));
             }
 
-            return list;
+            if (entries.Count == 0)
+                return new JArray();
+
+            var tpl = new SimilarTpl(entries.Count);
+            foreach (var entry in entries)
+                tpl.Append(entry.Title, entry.Year, entry.Details, entry.Url);
+
+            var token = ParseTemplateJson(tpl.ToJson());
+            if (token is JObject obj && obj.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
+            {
+                for (int i = 0; i < dataArray.Count && i < entries.Count; i++)
+                {
+                    if (dataArray[i] is JObject item)
+                        item["provider"] = entries[i].Provider;
+                }
+            }
+
+            return token;
         }
 
         private static string BuildProviderDetails(ProviderFetchResult result)
