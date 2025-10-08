@@ -2,7 +2,7 @@
 
 # AGENTS.md - Руководство по разработке модулей для Lampac
 
-Документация - https://github.com/immisterio/Lampac
+Первым делом Изучи Документацию и всю что нужно в этом репозитории - https://github.com/immisterio/Lampac
 
 
 ## Обзор модульной системы
