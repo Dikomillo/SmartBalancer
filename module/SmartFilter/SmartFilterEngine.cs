@@ -1,20 +1,56 @@
-using Newtonsoft.Json;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.Caching.Memory;
 using Newtonsoft.Json.Linq;
-using Shared.Models;
-using Shared.Models.Templates;
 using System;
-using System.Net.Http;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
-using System.Text;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Caching.Memory;
-using Microsoft.AspNetCore.Http;
 
 namespace SmartFilter
 {
+    internal class ProviderDescriptor
+    {
+        public string Name { get; init; }
+        public string Url { get; init; }
+        public string Plugin { get; init; }
+        public int? Index { get; init; }
+    }
+
+    internal class ProviderFetchResult
+    {
+        public ProviderDescriptor Descriptor { get; init; }
+        public string ProviderName => Descriptor?.Name;
+        public string ProviderPlugin => Descriptor?.Plugin;
+        public int? ProviderIndex => Descriptor?.Index;
+        public bool Success { get; set; }
+        public bool HasContent { get; set; }
+        public int ItemsCount { get; set; }
+        public int ResponseTime { get; set; }
+        public string ErrorMessage { get; set; }
+        public string ContentType { get; set; }
+        public JToken Payload { get; set; }
+
+        public ProviderStatus ToStatus()
+        {
+            return new ProviderStatus
+            {
+                Name = ProviderName,
+                Plugin = ProviderPlugin,
+                Index = ProviderIndex,
+                Items = ItemsCount,
+                ResponseTime = ResponseTime,
+                Error = Success ? null : ErrorMessage,
+                Status = Success
+                    ? (HasContent ? "completed" : "empty")
+                    : "error"
+            };
+        }
+    }
+
     public class SmartFilterEngine
     {
         private readonly IMemoryCache memoryCache;
@@ -22,334 +58,400 @@ namespace SmartFilter
         private readonly HttpContext httpContext;
         private readonly SemaphoreSlim semaphore;
 
+        private static readonly Lazy<HttpClient> sharedHttpClient = new(() =>
+        {
+            var handler = new SocketsHttpHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                AllowAutoRedirect = true,
+                UseCookies = false
+            };
+
+            return new HttpClient(handler, disposeHandler: true)
+            {
+                Timeout = Timeout.InfiniteTimeSpan
+            };
+        });
+
+        private static HttpClient HttpClient => sharedHttpClient.Value;
+
         public SmartFilterEngine(IMemoryCache cache, string hostUrl, HttpContext context)
         {
             memoryCache = cache;
             host = hostUrl;
             httpContext = context;
-            semaphore = new SemaphoreSlim(ModInit.conf.maxParallelRequests, ModInit.conf.maxParallelRequests);
+            semaphore = new SemaphoreSlim(Math.Max(1, ModInit.conf.maxParallelRequests));
         }
 
-        public async Task<List<ProviderResult>> AggregateProvidersAsync(
-            string imdb_id, long kinopoisk_id, string title, string original_title, int year, int serial, string original_language)
+        public async Task<AggregationResult> AggregateProvidersAsync(string imdbId, long kinopoiskId, string title, string originalTitle, int year, int serial, string originalLanguage, int requestedSeason, string progressKey)
         {
-            Console.WriteLine($"🔍 SmartFilter: Starting aggregation for '{title}' ({year})");
+            var baseQuery = BuildBaseQueryParameters(imdbId, kinopoiskId, title, originalTitle, year, serial, originalLanguage);
+            var providers = await GetActiveProvidersAsync(baseQuery, serial);
 
-            string cacheKey = $"smartfilter:{imdb_id}:{kinopoisk_id}:{title}:{year}:{serial}";
-            if (memoryCache.TryGetValue(cacheKey, out List<ProviderResult> cachedResult))
+            var aggregation = new AggregationResult
             {
-                Console.WriteLine($"✅ SmartFilter: Cache hit for '{title}'");
-                return cachedResult;
-            }
+                Type = DetermineDefaultType(serial, requestedSeason),
+                ProgressKey = progressKey
+            };
 
-            Console.WriteLine($"❌ SmartFilter: Cache miss for '{title}', fetching data");
-
-            var providers = await GetActiveProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language);
             if (providers.Count == 0)
             {
-                Console.WriteLine($"⚠️ SmartFilter: No active providers found for '{title}'");
-                memoryCache.Set(cacheKey, new List<ProviderResult>(), TimeSpan.FromMinutes(ModInit.conf.cacheTimeMinutes));
-                return new List<ProviderResult>();
+                SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
+                return aggregation;
             }
 
-            Console.WriteLine($"📡 SmartFilter: Found {providers.Count} active providers for '{title}'");
+            SmartFilterProgress.Initialize(memoryCache, progressKey, providers);
 
-            var aggregatedResults = new List<ProviderResult>();
-            var tasks = providers.Select(async provider =>
-            {
-                var result = await FetchProviderTemplateAsync(provider, imdb_id, kinopoisk_id, title, original_title, year, serial, original_language);
-                if (result != null)
-                {
-                    lock (aggregatedResults)
-                    {
-                        aggregatedResults.Add(result);
-                    }
-                }
-            });
+            var tasks = providers.Select(provider => FetchProviderTemplateAsync(provider, baseQuery, progressKey)).ToList();
+            var results = await Task.WhenAll(tasks);
 
-            await Task.WhenAll(tasks);
+            var successful = results.Where(r => r.Success && r.Payload != null).ToList();
+            if (successful.Count > 0)
+                aggregation.Type = DetermineContentType(successful, serial, requestedSeason, aggregation.Type);
 
-            Console.WriteLine($"✅ SmartFilter: Aggregated {aggregatedResults.Count} provider results for '{title}'");
-            memoryCache.Set(cacheKey, aggregatedResults, TimeSpan.FromMinutes(ModInit.conf.cacheTimeMinutes));
-            return aggregatedResults;
+            aggregation.Data = MergePayloads(successful, aggregation.Type);
+            aggregation.Providers = results.Select(r => r.ToStatus()).OrderBy(p => p.Index ?? int.MaxValue).ThenBy(p => p.Name).ToList();
+
+            SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
+            return aggregation;
         }
 
-        private async Task<List<(string name, string url)>> GetActiveProvidersAsync(
-            string imdb_id, long kinopoisk_id, string title, string original_title, int year, int serial, string original_language)
+        private async Task<List<ProviderDescriptor>> GetActiveProvidersAsync(Dictionary<string, string> baseQuery, int serial)
         {
-            var providers = new List<(string name, string url)>();
+            var providers = new List<ProviderDescriptor>();
 
             try
             {
-                var queryParams = new List<string>();
-                if (!string.IsNullOrEmpty(imdb_id)) queryParams.Add($"imdb_id={Uri.EscapeDataString(imdb_id)}");
-                if (kinopoisk_id > 0) queryParams.Add($"kinopoisk_id={kinopoisk_id}");
-                if (!string.IsNullOrEmpty(title)) queryParams.Add($"title={Uri.EscapeDataString(title)}");
-                if (!string.IsNullOrEmpty(original_title)) queryParams.Add($"original_title={Uri.EscapeDataString(original_title)}");
-                if (year > 0) queryParams.Add($"year={year}");
-                if (serial >= 0) queryParams.Add($"serial={serial}");
-                if (!string.IsNullOrEmpty(original_language)) queryParams.Add($"original_language={Uri.EscapeDataString(original_language)}");
+                string eventsUrl = QueryHelpers.AddQueryString($"{host}/lite/events", baseQuery);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(ModInit.conf.requestTimeoutSeconds > 0 ? ModInit.conf.requestTimeoutSeconds : 40));
+                var response = await HttpClient.GetStringAsync(eventsUrl, cts.Token);
 
-                string eventsUrl = $"{host}/lite/events?{string.Join("&", queryParams)}";
-                Console.WriteLine($"🌐 SmartFilter: Fetching providers from: {eventsUrl}");
+                if (string.IsNullOrWhiteSpace(response))
+                    return providers;
 
-                using var httpClient = new HttpClient();
-                httpClient.Timeout = TimeSpan.FromSeconds(ModInit.conf.requestTimeoutSeconds > 0 ? ModInit.conf.requestTimeoutSeconds : 40);
+                var providerArray = JArray.Parse(response);
+                var exclude = new HashSet<string>(ModInit.conf.excludeProviders ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+                var includeOnly = new HashSet<string>(ModInit.conf.includeOnlyProviders ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
 
-                var response = await httpClient.GetStringAsync(eventsUrl);
-                if (!string.IsNullOrEmpty(response))
+                foreach (var token in providerArray.OfType<JObject>())
                 {
-                    var providerArray = JsonConvert.DeserializeObject<dynamic[]>(response);
-                    if (providerArray != null)
+                    string name = token.Value<string>("name");
+                    string url = token.Value<string>("url");
+                    string plugin = token.Value<string>("balanser");
+                    int? index = token.TryGetValue("index", out var indexToken) && int.TryParse(indexToken.ToString(), out int parsedIndex) ? parsedIndex : null;
+
+                    if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url))
+                        continue;
+
+                    if (string.Equals(name, "SmartFilter Aggregator", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (exclude.Contains(name))
+                        continue;
+
+                    if (includeOnly.Count > 0 && !includeOnly.Contains(name))
+                        continue;
+
+                    if (serial != 1 && IsAnimeProvider(name))
+                        continue;
+
+                    providers.Add(new ProviderDescriptor
                     {
-                        foreach (var provider in providerArray)
-                        {
-                            string name = provider.name?.ToString();
-                            string url = provider.url?.ToString();
-
-                            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(url))
-                                continue;
-
-                            // Исключаем самого себя
-                            if (name == "SmartFilter Aggregator")
-                                continue;
-
-                            // Фильтруем аниме-провайдеры для фильмов
-                            if (serial != 1 && IsAnimeProvider(name))
-                            {
-                                Console.WriteLine($"⏭️ SmartFilter: Skipping anime provider '{name}' for movie content");
-                                continue;
-                            }
-
-                            // Проверяем исключения
-                            if (ModInit.conf.excludeProviders.Contains(name))
-                            {
-                                Console.WriteLine($"⏭️ SmartFilter: Excluding provider '{name}' (in excludeProviders)");
-                                continue;
-                            }
-
-                            // Проверяем включения (если список не пустой)
-                            if (ModInit.conf.includeOnlyProviders.Length > 0 && !ModInit.conf.includeOnlyProviders.Contains(name))
-                            {
-                                Console.WriteLine($"⏭️ SmartFilter: Skipping provider '{name}' (not in includeOnlyProviders)");
-                                continue;
-                            }
-
-                            providers.Add((name, url));
-                            Console.WriteLine($"✅ SmartFilter: Added provider '{name}': {url}");
-                        }
-                    }
+                        Name = name,
+                        Url = url.Replace("{localhost}", host),
+                        Plugin = plugin,
+                        Index = index
+                    });
                 }
-
-                Console.WriteLine($"📊 SmartFilter: Total active providers: {providers.Count}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ SmartFilter: Error getting active providers: {ex.Message}");
+                Console.WriteLine($"SmartFilter: error while loading providers - {ex.Message}");
             }
 
-            return providers;
+            return providers.OrderBy(p => p.Index ?? int.MaxValue).ThenBy(p => p.Name).ToList();
         }
 
-        private bool IsAnimeProvider(string providerName)
+        private async Task<ProviderFetchResult> FetchProviderTemplateAsync(ProviderDescriptor provider, Dictionary<string, string> baseQuery, string progressKey)
         {
-            var animeProviders = new[] { "AniLiberty", "AnimeLib", "AniMedia", "AnimeGo", "Animevost", "Animebesst", "MoonAnime" };
-            return animeProviders.Contains(providerName);
-        }
+            var result = new ProviderFetchResult { Descriptor = provider };
 
-        private async Task<ProviderResult> FetchProviderTemplateAsync(
-            (string name, string url) provider, string imdb_id, long kinopoisk_id, string title, string original_title, int year, int serial, string original_language)
-        {
-            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            if (provider == null || string.IsNullOrWhiteSpace(provider.Url))
+            {
+                result.ErrorMessage = "Invalid provider";
+                return result;
+            }
+
             await semaphore.WaitAsync();
 
             try
             {
-                var queryParams = new List<string> { "rjson=true" };
-                if (!string.IsNullOrEmpty(imdb_id)) queryParams.Add($"imdb_id={Uri.EscapeDataString(imdb_id)}");
-                if (kinopoisk_id > 0) queryParams.Add($"kinopoisk_id={kinopoisk_id}");
-                if (!string.IsNullOrEmpty(title)) queryParams.Add($"title={Uri.EscapeDataString(title)}");
-                if (!string.IsNullOrEmpty(original_title)) queryParams.Add($"original_title={Uri.EscapeDataString(original_title)}");
-                if (year > 0) queryParams.Add($"year={year}");
-                if (serial >= 0) queryParams.Add($"serial={serial}");
-                if (!string.IsNullOrEmpty(original_language)) queryParams.Add($"original_language={Uri.EscapeDataString(original_language)}");
+                var requestQuery = new Dictionary<string, string>(baseQuery, StringComparer.OrdinalIgnoreCase)
+                {
+                    ["rjson"] = "true"
+                };
 
-                // Исправляем формирование URL (убираем двойные ??)
-                string separator = provider.url.Contains("?") ? "&" : "?";
-                string url = $"{provider.url}{separator}{string.Join("&", queryParams)}";
-                
-                // Retry логика
-                int maxAttempts = ModInit.conf.enableRetry ? ModInit.conf.maxRetryAttempts : 1;
-                
+                string url = QueryHelpers.AddQueryString(provider.Url, requestQuery);
+                SmartFilterProgress.MarkRunning(memoryCache, progressKey, provider.Name);
+
+                int maxAttempts = ModInit.conf.enableRetry ? Math.Max(1, ModInit.conf.maxRetryAttempts) : 1;
+
                 for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
                     try
                     {
                         if (attempt > 1)
-                        {
-                            Console.WriteLine($"🔄 SmartFilter: Retry attempt {attempt}/{maxAttempts} for {provider.name}");
-                            await Task.Delay(ModInit.conf.retryDelayMs * attempt);
-                        }
-                        
-                        Console.WriteLine($"🔗 SmartFilter: Fetching from {provider.name}: {url}");
+                            await Task.Delay(Math.Max(0, ModInit.conf.retryDelayMs));
 
-                        using var httpClient = new HttpClient();
-                        httpClient.Timeout = TimeSpan.FromSeconds(ModInit.conf.requestTimeoutSeconds > 0 ? 
-                            ModInit.conf.requestTimeoutSeconds : 25);
+                        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(ModInit.conf.requestTimeoutSeconds > 0 ? ModInit.conf.requestTimeoutSeconds : 25));
+                        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                        string response = await HttpClient.GetStringAsync(url, cts.Token);
+                        stopwatch.Stop();
+                        result.ResponseTime = (int)stopwatch.ElapsedMilliseconds;
 
-                        var response = await httpClient.GetStringAsync(url);
-                        
-                        if (IsValidResponse(response, provider.name))
+                        if (TryParseProviderResponse(response, out JToken payload, out string contentType, out int count))
                         {
-                            stopwatch.Stop();
-                            var dataCount = CountResponseItems(response);
-                            Console.WriteLine($"⏱️ SmartFilter: {provider.name} responded in {stopwatch.ElapsedMilliseconds}ms with {dataCount} items");
-                            
-                            return new ProviderResult
-                            {
-                                ProviderName = provider.name,
-                                JsonData = response,
-                                HasContent = !IsEmptyResponse(response),
-                                ResponseTime = (int)stopwatch.ElapsedMilliseconds,
-                                FetchedAt = DateTime.Now
-                            };
+                            result.Payload = payload;
+                            result.ContentType = contentType;
+                            result.ItemsCount = count;
+                            result.HasContent = count > 0;
+                            result.Success = true;
+                            break;
                         }
-                        else
-                        {
-                            if (ModInit.conf.detailedLogging)
-                                Console.WriteLine($"⚠️ SmartFilter: Invalid response from {provider.name} (attempt {attempt}): {response?.Substring(0, Math.Min(200, response?.Length ?? 0))}");
-                        }
+
+                        result.ErrorMessage = "Unsupported response";
                     }
-                    catch (TaskCanceledException) when (attempt == maxAttempts)
+                    catch (TaskCanceledException)
                     {
-                        stopwatch.Stop();
-                        Console.WriteLine($"⏰ SmartFilter: Final timeout from {provider.name} after {maxAttempts} attempts ({stopwatch.ElapsedMilliseconds}ms)");
-                        break;
+                        result.ErrorMessage = "Request timeout";
+                        if (attempt == maxAttempts)
+                            break;
                     }
-                    catch (HttpRequestException ex) when (ex.Message.Contains("500") && attempt < maxAttempts)
+                    catch (HttpRequestException ex)
                     {
-                        Console.WriteLine($"🔄 SmartFilter: HTTP 500 from {provider.name}, will retry (attempt {attempt}/{maxAttempts})");
-                        continue;
+                        result.ErrorMessage = ex.Message;
+                        if (attempt == maxAttempts)
+                            break;
                     }
-                    catch (Exception ex) when (attempt == maxAttempts)
+                    catch (Exception ex)
                     {
-                        stopwatch.Stop();
-                        Console.WriteLine($"❌ SmartFilter: Final error from {provider.name} ({stopwatch.ElapsedMilliseconds}ms): {ex.Message}");
+                        result.ErrorMessage = ex.Message;
                         break;
                     }
                 }
             }
             finally
             {
+                SmartFilterProgress.MarkResult(memoryCache, progressKey, result);
                 semaphore.Release();
             }
 
-            return null;
+            return result;
         }
 
-        private int CountResponseItems(string response)
+        private bool TryParseProviderResponse(string response, out JToken payload, out string contentType, out int itemsCount)
         {
-            try
-            {
-                var json = JObject.Parse(response);
-                if (json["data"] is JArray dataArray)
-                    return dataArray.Count;
-            }
-            catch { }
-            return 0;
-        }
+            payload = null;
+            contentType = null;
+            itemsCount = 0;
 
-        private bool IsValidResponse(string response, string providerName = "")
-        {
-            if (string.IsNullOrEmpty(response) || response.Length <= 2)
+            if (string.IsNullOrWhiteSpace(response) || IsHtmlResponse(response))
                 return false;
 
-            // Проверяем HTML ответы
-            if (IsHtmlResponse(response))
-            {
-                if (ModInit.conf.detailedLogging)
-                    Console.WriteLine($"🌐 SmartFilter: HTML response detected from {providerName}");
-                return false;
-            }
-
-            // Более гибкая проверка JSON
             try
             {
-                var json = JToken.Parse(response);
-                
-                // Проверяем наличие данных
-                if (json["data"] != null || json["results"] != null)
+                var token = JToken.Parse(response);
+
+                if (token is JObject obj)
                 {
-                    // Дополнительная проверка на пустые массивы
-                    if (json["data"] is JArray dataArray && dataArray.Count == 0)
-                    {
-                        if (ModInit.conf.detailedLogging)
-                            Console.WriteLine($"📝 SmartFilter: {providerName} returned empty data array");
-                        return true; // Валидный JSON, но пустой
-                    }
-                    return true;
+                    if (obj.TryGetValue("type", out var typeToken) && typeToken.Type == JTokenType.String)
+                        contentType = typeToken.ToString();
+
+                    if (obj.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
+                        itemsCount = dataArray.Count;
+                    else if (obj.TryGetValue("results", out var resultsToken) && resultsToken is JArray resultsArray)
+                        itemsCount = resultsArray.Count;
+
+                    payload = obj;
                 }
-                
-                // Проверяем специфичные форматы провайдеров
-                if (json["type"] != null)
-                    return true;
-                    
-            }
-            catch (Exception ex)
-            {
-                if (ModInit.conf.detailedLogging)
-                    Console.WriteLine($"📛 SmartFilter: JSON parse error from {providerName}: {ex.Message}");
-            }
+                else if (token is JArray array)
+                {
+                    payload = array;
+                    itemsCount = array.Count;
+                }
+                else
+                {
+                    return false;
+                }
 
-            // Проверяем на ошибки доступа
-            bool hasAccessError = response.Contains("\"accsdb\":true") ||
-                                 response.Contains("IP-адрес заблокирован") ||
-                                 response.Contains("Ошибка доступа");
-                                 
-            if (hasAccessError && ModInit.conf.detailedLogging)
-                Console.WriteLine($"🚫 SmartFilter: Access error detected from {providerName}");
-
-            return !hasAccessError && response != "[]" && response != "{}";
-        }
-
-        private bool IsHtmlResponse(string response)
-        {
-            if (string.IsNullOrEmpty(response))
-                return false;
-
-            return response.StartsWith("<") || 
-                   response.Contains("<!DOCTYPE") || 
-                   response.Contains("<html") || 
-                   response.Contains("<body");
-        }
-
-        private bool IsEmptyResponse(string response)
-        {
-            if (string.IsNullOrEmpty(response))
                 return true;
-
-            try
-            {
-                var json = JObject.Parse(response);
-                
-                // Проверяем MovieTpl формат
-                if (json["data"] is JArray dataArray)
-                {
-                    return dataArray.Count == 0;
-                }
-                
-                // Проверяем SimilarTpl формат
-                if (json["type"]?.ToString() == "similar" && json["data"] is JArray similarArray)
-                {
-                    return similarArray.Count == 0;
-                }
-                
-                return false;
             }
             catch
             {
-                return true;
+                return false;
             }
+        }
+
+        private string DetermineContentType(IEnumerable<ProviderFetchResult> results, int serial, int requestedSeason, string fallback)
+        {
+            foreach (var result in results)
+            {
+                if (!string.IsNullOrWhiteSpace(result.ContentType))
+                    return result.ContentType;
+            }
+
+            return fallback ?? DetermineDefaultType(serial, requestedSeason);
+        }
+
+        private static string DetermineDefaultType(int serial, int requestedSeason)
+        {
+            if (serial == 1)
+                return requestedSeason > 0 ? "episode" : "season";
+
+            return "movie";
+        }
+
+        private JArray MergePayloads(IEnumerable<ProviderFetchResult> results, string expectedType)
+        {
+            var aggregated = new JArray();
+
+            foreach (var result in results)
+            {
+                foreach (var item in ExtractItems(result.Payload, expectedType))
+                {
+                    if (item is JObject obj)
+                    {
+                        if (string.IsNullOrEmpty(obj.Value<string>("provider")))
+                            obj["provider"] = result.ProviderName;
+
+                        if (string.IsNullOrEmpty(obj.Value<string>("balanser")) && !string.IsNullOrEmpty(result.ProviderPlugin))
+                            obj["balanser"] = result.ProviderPlugin;
+                    }
+
+                    aggregated.Add(item);
+                }
+            }
+
+            return aggregated;
+        }
+
+        private IEnumerable<JToken> ExtractItems(JToken payload, string expectedType)
+        {
+            if (payload == null)
+                yield break;
+
+            if (payload is JObject obj)
+            {
+                if (obj.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
+                {
+                    foreach (var item in dataArray)
+                        yield return item.DeepClone();
+                    yield break;
+                }
+
+                if (obj.TryGetValue("results", out var resultsToken) && resultsToken is JArray resultsArray)
+                {
+                    foreach (var item in resultsArray)
+                        yield return item.DeepClone();
+                    yield break;
+                }
+
+                if (expectedType == "episode" && obj.TryGetValue("episodes", out var episodesToken) && episodesToken is JArray episodesArray)
+                {
+                    foreach (var item in episodesArray)
+                        yield return item.DeepClone();
+                    yield break;
+                }
+            }
+            else if (payload is JArray array)
+            {
+                foreach (var item in array)
+                    yield return item.DeepClone();
+            }
+        }
+
+        private Dictionary<string, string> BuildBaseQueryParameters(string imdbId, long kinopoiskId, string title, string originalTitle, int year, int serial, string originalLanguage)
+        {
+            var query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            if (httpContext?.Request?.Query != null)
+            {
+                foreach (var pair in httpContext.Request.Query)
+                {
+                    var value = pair.Value.ToString();
+                    if (!string.IsNullOrWhiteSpace(value))
+                        query[pair.Key] = value;
+                }
+            }
+
+            query.Remove("rjson");
+
+            if (!string.IsNullOrEmpty(imdbId))
+                query["imdb_id"] = imdbId;
+            else
+                query.Remove("imdb_id");
+
+            if (kinopoiskId > 0)
+                query["kinopoisk_id"] = kinopoiskId.ToString();
+            else
+                query.Remove("kinopoisk_id");
+
+            if (!string.IsNullOrEmpty(title))
+                query["title"] = title;
+            else
+                query.Remove("title");
+
+            if (!string.IsNullOrEmpty(originalTitle))
+                query["original_title"] = originalTitle;
+            else
+                query.Remove("original_title");
+
+            if (year > 0)
+                query["year"] = year.ToString();
+            else
+                query.Remove("year");
+
+            if (serial >= 0)
+                query["serial"] = serial.ToString();
+            else
+                query.Remove("serial");
+
+            if (!string.IsNullOrEmpty(originalLanguage))
+                query["original_language"] = originalLanguage;
+            else
+                query.Remove("original_language");
+
+            return query;
+        }
+
+        internal static string BuildCacheKey(Dictionary<string, string> query)
+        {
+            var normalized = query
+                .Where(kv => !string.IsNullOrWhiteSpace(kv.Value))
+                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(kv => $"{kv.Key}={kv.Value}");
+
+            return "smartfilter:" + string.Join("&", normalized);
+        }
+
+        private static bool IsAnimeProvider(string providerName)
+        {
+            if (string.IsNullOrWhiteSpace(providerName))
+                return false;
+
+            string[] animeProviders = { "AniLiberty", "AnimeLib", "AniMedia", "AnimeGo", "Animevost", "Animebesst", "MoonAnime" };
+            return animeProviders.Contains(providerName);
+        }
+
+        private static bool IsHtmlResponse(string response)
+        {
+            if (string.IsNullOrEmpty(response))
+                return false;
+
+            return response.StartsWith("<", StringComparison.OrdinalIgnoreCase) ||
+                   response.Contains("<!DOCTYPE", StringComparison.OrdinalIgnoreCase) ||
+                   response.Contains("<html", StringComparison.OrdinalIgnoreCase) ||
+                   response.Contains("<body", StringComparison.OrdinalIgnoreCase);
         }
     }
 }
