@@ -31,10 +31,65 @@ namespace SmartFilter
 
             return type switch
             {
+                "similar" => BuildSimilarHtml(array),
                 "season" => BuildSeasonHtml(array),
                 "episode" => BuildEpisodeHtml(array),
                 _ => BuildMovieHtml(array, title, originalTitle)
             };
+        }
+
+        private static string BuildSimilarHtml(JArray data)
+        {
+            var html = new StringBuilder();
+            html.Append("<div class=\"videos__line\" data-smartfilter=\"true\">");
+            bool first = true;
+
+            foreach (var token in data.OfType<JObject>())
+            {
+                string url = token.Value<string>("url") ?? token.Value<string>("link");
+                if (string.IsNullOrWhiteSpace(url))
+                    continue;
+
+                string title = token.Value<string>("title") ?? token.Value<string>("name") ?? "Источник";
+                string method = token.Value<string>("method") ?? "link";
+                string details = token.Value<string>("details");
+
+                var payload = new JObject
+                {
+                    ["method"] = method,
+                    ["url"] = url
+                };
+
+                string provider = token.Value<string>("provider");
+                if (!string.IsNullOrWhiteSpace(provider))
+                    payload["provider"] = provider;
+
+                string serialized = JsonConvert.SerializeObject(payload, Formatting.None);
+
+                html.Append("<div class=\"videos__item videos__season selector ");
+                if (first)
+                {
+                    html.Append("focused ");
+                    first = false;
+                }
+
+                html.Append("\" data-json='");
+                html.Append(WebUtility.HtmlEncode(serialized));
+                html.Append("'><div class=\"videos__season-layers\"></div><div class=\"videos__item-imgbox videos__season-imgbox\"><div class=\"videos__item-title videos__season-title\">");
+                html.Append(WebUtility.HtmlEncode(title));
+
+                if (!string.IsNullOrWhiteSpace(details))
+                {
+                    html.Append("<div class=\"smartfilter-meta\">");
+                    html.Append(WebUtility.HtmlEncode(details));
+                    html.Append("</div>");
+                }
+
+                html.Append("</div></div></div>");
+            }
+
+            html.Append("</div>");
+            return html.ToString();
         }
 
         private static JArray Flatten(JObject grouped)
