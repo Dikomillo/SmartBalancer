@@ -103,6 +103,7 @@ namespace SmartFilter
                     {
                         ["type"] = aggregation.Type,
                         ["data"] = aggregation.Data,
+                        ["results"] = aggregation.Data,
                         ["providers"] = JArray.FromObject(providerStatus),
                         ["progressKey"] = progressKey
                     };
