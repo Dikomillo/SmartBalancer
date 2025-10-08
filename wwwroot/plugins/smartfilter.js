@@ -105,7 +105,7 @@
                 }
 
                 .smartfilter-progress__loader--success::before {
-                    content: '\2713';
+                    content: '\\2713';
                     font-size: 18px;
                     color: #7bffb0;
                     animation: smartfilter-pop 0.35s ease forwards;
