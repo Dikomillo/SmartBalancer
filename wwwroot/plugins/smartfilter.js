@@ -358,6 +358,12 @@
                     cursor: pointer;
                 }
 
+                .smartfilter-meta {
+                    margin-top: 4px;
+                    font-size: 0.85em;
+                    color: rgba(255, 255, 255, 0.7);
+                }
+
                 .smartfilter-modal {
                     position: fixed;
                     top: 0;
