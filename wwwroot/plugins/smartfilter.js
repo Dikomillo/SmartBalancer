@@ -17,6 +17,10 @@
         progressReady: false,
         originalOpen: null,
         originalSend: null,
+        activeModal: null,
+        modalKeyHandler: null,
+        modalBackHandler: null,
+        previousController: null,
 
         init() {
             if (!window.Lampa || !Lampa.Template || !document.body) {
@@ -1135,6 +1139,8 @@
         },
 
         openFilterModal() {
+            this.closeFilterModal();
+
             if (!this.cachedData || !this.cachedData.data || !this.cachedData.data.length) {
                 if (window.Lampa && Lampa.Toast)
                     Lampa.Toast.show('Данные еще загружаются', 2500);
@@ -1174,7 +1180,9 @@
                     </div>
                 </div>`;
 
-            modal.querySelector('#smartfilter-modal-close').addEventListener('click', () => modal.remove());
+            const closeModal = () => this.closeFilterModal();
+
+            modal.querySelector('#smartfilter-modal-close').addEventListener('click', closeModal);
             modal.querySelector('#smartfilter-reset').addEventListener('click', () => {
                 modal.querySelectorAll('.smartfilter-chip').forEach((chip) => chip.classList.remove('active'));
             });
@@ -1182,7 +1190,7 @@
                 const selectedVoices = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="voice"].active')).map((chipEl) => chipEl.dataset.value);
                 const selectedQuality = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="quality"].active')).map((chipEl) => chipEl.dataset.value);
                 this.applyFilters(selectedVoices, selectedQuality);
-                modal.remove();
+                closeModal();
             });
 
             modal.querySelectorAll('.smartfilter-chip').forEach((chip) => {
@@ -1190,6 +1198,90 @@
             });
 
             document.body.appendChild(modal);
+            this.activeModal = modal;
+
+            const keyHandler = (event) => {
+                if (!this.isBackNavigation(event))
+                    return;
+
+                event.preventDefault();
+                event.stopPropagation();
+                closeModal();
+            };
+
+            this.modalKeyHandler = keyHandler;
+            window.addEventListener('keydown', keyHandler, true);
+
+            const backButtonHandler = () => closeModal();
+            this.modalBackHandler = backButtonHandler;
+            document.addEventListener('backbutton', backButtonHandler, true);
+
+            if (window.Lampa && Lampa.Controller && typeof Lampa.Controller.add === 'function') {
+                const controllerName = 'smartfilter-modal';
+                const enabled = typeof Lampa.Controller.enabled === 'function' ? Lampa.Controller.enabled() : null;
+                this.previousController = enabled && enabled.name ? enabled.name : null;
+
+                Lampa.Controller.add(controllerName, {
+                    toggle: () => {
+                        if (typeof Lampa.Controller.collectionSet === 'function')
+                            Lampa.Controller.collectionSet(modal);
+
+                        const target = modal.querySelector('.smartfilter-chip.active')
+                            || modal.querySelector('#smartfilter-apply')
+                            || modal.querySelector('#smartfilter-modal-close');
+
+                        if (target && typeof Lampa.Controller.collectionFocus === 'function')
+                            Lampa.Controller.collectionFocus(target, modal);
+                    },
+                    back: closeModal
+                });
+
+                if (typeof Lampa.Controller.toggle === 'function')
+                    Lampa.Controller.toggle(controllerName);
+            }
+        },
+
+        closeFilterModal() {
+            const modal = this.activeModal;
+            if (!modal)
+                return;
+
+            if (this.modalKeyHandler) {
+                window.removeEventListener('keydown', this.modalKeyHandler, true);
+                this.modalKeyHandler = null;
+            }
+
+            if (this.modalBackHandler) {
+                document.removeEventListener('backbutton', this.modalBackHandler, true);
+                this.modalBackHandler = null;
+            }
+
+            if (window.Lampa && Lampa.Controller) {
+                if (typeof Lampa.Controller.remove === 'function')
+                    Lampa.Controller.remove('smartfilter-modal');
+
+                if (this.previousController && typeof Lampa.Controller.toggle === 'function')
+                    Lampa.Controller.toggle(this.previousController);
+
+                this.previousController = null;
+            }
+
+            if (modal.parentElement)
+                modal.remove();
+
+            this.activeModal = null;
+        },
+
+        isBackNavigation(event) {
+            if (!event)
+                return false;
+
+            const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+            if (['back', 'backspace', 'escape', 'esc', 'browserback'].includes(key))
+                return true;
+
+            const keyCode = event.keyCode || event.which || event.detail;
+            return [8, 27, 461, 10009, 166].includes(keyCode);
         },
 
         createChip(type, value) {
