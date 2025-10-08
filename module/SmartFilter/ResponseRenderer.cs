@@ -15,27 +15,54 @@ namespace SmartFilter
             if (data == null)
                 return string.Empty;
 
+            bool isSeason = string.Equals(type, "season", StringComparison.OrdinalIgnoreCase);
+            bool isEpisode = string.Equals(type, "episode", StringComparison.OrdinalIgnoreCase);
+
+            string voiceHtml = null;
+            string maxQuality = null;
+
+            if (isSeason || isEpisode)
+            {
+                var (seriesData, voiceData, quality) = SeriesDataHelper.Unpack(data);
+                data = seriesData;
+                maxQuality = quality;
+
+                if (voiceData != null && voiceData.Count > 0)
+                    voiceHtml = BuildVoiceHtml(voiceData);
+            }
+
             if (data is JObject grouped)
             {
                 if (!grouped.Properties().Any())
-                    return string.Empty;
+                    return voiceHtml ?? string.Empty;
 
-                if (string.Equals(type, "season", StringComparison.OrdinalIgnoreCase))
-                    return BuildGroupedSeasonHtml(grouped);
+                if (isSeason)
+                {
+                    var groupedHtml = BuildGroupedSeasonHtml(grouped);
+                    if (string.IsNullOrEmpty(groupedHtml))
+                        return voiceHtml ?? string.Empty;
+
+                    return string.Concat(voiceHtml ?? string.Empty, groupedHtml);
+                }
 
                 data = Flatten(grouped);
             }
 
             if (data is not JArray array || array.Count == 0)
-                return string.Empty;
+                return voiceHtml ?? string.Empty;
 
-            return type switch
+            string content = type switch
             {
                 "similar" => BuildSimilarHtml(array),
-                "season" => BuildSeasonHtml(array),
+                "season" => BuildSeasonHtml(array, maxQuality),
                 "episode" => BuildEpisodeHtml(array),
                 _ => BuildMovieHtml(array, title, originalTitle)
             };
+
+            if (string.IsNullOrEmpty(content))
+                return voiceHtml ?? string.Empty;
+
+            return string.Concat(voiceHtml ?? string.Empty, content);
         }
 
         private static string BuildSimilarHtml(JArray data)
@@ -176,11 +203,18 @@ namespace SmartFilter
             });
         }
 
-        private static string BuildSeasonHtml(JArray data)
+        private static string BuildSeasonHtml(JArray data, string maxQuality = null)
         {
             var html = new StringBuilder();
             html.Append("<div class=\"videos__line\" data-smartfilter=\"true\">");
             bool first = true;
+
+            if (!string.IsNullOrWhiteSpace(maxQuality))
+            {
+                html.Append("<!--q:");
+                html.Append(WebUtility.HtmlEncode(maxQuality));
+                html.Append("-->");
+            }
 
             foreach (var token in data.OfType<JObject>())
             {
@@ -223,6 +257,55 @@ namespace SmartFilter
                 }
 
                 html.Append("</div></div></div>");
+            }
+
+            html.Append("</div>");
+            return html.ToString();
+        }
+
+        private static string BuildVoiceHtml(JArray voiceData)
+        {
+            if (voiceData == null || voiceData.Count == 0)
+                return string.Empty;
+
+            var html = new StringBuilder();
+            html.Append("<div class=\"videos__line\" data-smartfilter=\"true\">");
+
+            foreach (var token in voiceData.OfType<JObject>())
+            {
+                string url = token.Value<string>("url") ?? token.Value<string>("link");
+                if (string.IsNullOrWhiteSpace(url))
+                    continue;
+
+                string method = token.Value<string>("method") ?? "link";
+                bool active = token.Value<bool?>("active") ?? false;
+                string name = token.Value<string>("name") ?? token.Value<string>("title") ?? "Перевод";
+                string details = token.Value<string>("details") ?? token.Value<string>("provider");
+
+                var payload = new JObject
+                {
+                    ["method"] = method,
+                    ["url"] = url
+                };
+
+                string serialized = JsonConvert.SerializeObject(payload, Formatting.None);
+
+                html.Append("<div class=\"videos__button selector");
+                if (active)
+                    html.Append(" active");
+                html.Append("\" data-json='");
+                html.Append(WebUtility.HtmlEncode(serialized));
+                html.Append("'>");
+                html.Append(WebUtility.HtmlEncode(name));
+
+                if (!string.IsNullOrWhiteSpace(details))
+                {
+                    html.Append("<div class=\"smartfilter-meta\">");
+                    html.Append(WebUtility.HtmlEncode(details));
+                    html.Append("</div>");
+                }
+
+                html.Append("</div>");
             }
 
             html.Append("</div>");
