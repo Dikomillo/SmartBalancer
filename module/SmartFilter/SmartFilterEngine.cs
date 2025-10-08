@@ -152,7 +152,7 @@ namespace SmartFilter
                     if (includeOnly.Count > 0 && !includeOnly.Contains(name))
                         continue;
 
-                    if (serial != 1 && IsAnimeProvider(name))
+                    if (serial == 0 && IsAnimeProvider(name))
                         continue;
 
                     providers.Add(new ProviderDescriptor
@@ -294,11 +294,44 @@ namespace SmartFilter
 
         private string DetermineContentType(IEnumerable<ProviderFetchResult> results, int serial, int requestedSeason, string fallback)
         {
-            foreach (var result in results)
+            var contentTypes = results
+                .Select(r => r.ContentType)
+                .Where(type => !string.IsNullOrWhiteSpace(type))
+                .ToList();
+
+            if (contentTypes.Count > 0)
             {
-                if (!string.IsNullOrWhiteSpace(result.ContentType))
-                    return result.ContentType;
+                static bool Matches(string value, string expected) =>
+                    string.Equals(value, expected, StringComparison.OrdinalIgnoreCase);
+
+                if (serial == 1)
+                {
+                    if (requestedSeason > 0)
+                    {
+                        var episodeType = contentTypes.FirstOrDefault(t => Matches(t, "episode"));
+                        if (episodeType != null)
+                            return episodeType;
+                    }
+                    else
+                    {
+                        var seasonType = contentTypes.FirstOrDefault(t => Matches(t, "season"));
+                        if (seasonType != null)
+                            return seasonType;
+                    }
+                }
+
+                foreach (var preferred in new[] { "movie", "season", "episode", "similar" })
+                {
+                    var match = contentTypes.FirstOrDefault(t => Matches(t, preferred));
+                    if (match != null)
+                        return match;
+                }
+
             }
+
+            var firstContentType = contentTypes.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(firstContentType))
+                return firstContentType;
 
             return fallback ?? DetermineDefaultType(serial, requestedSeason);
         }
