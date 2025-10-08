@@ -54,14 +54,19 @@
                     top: 50%;
                     left: 50%;
                     transform: translate(-50%, -50%);
-                    width: min(420px, 92vw);
-                    max-width: 480px;
-                    padding: 20px 22px;
-                    border-radius: 16px;
-                    background: rgba(14, 14, 14, 0.92);
-                    backdrop-filter: blur(12px);
+                    width: min(480px, 94vw);
+                    max-width: 540px;
+                    padding: 26px 28px;
+                    border-radius: 20px;
+                    background: radial-gradient(circle at top, rgba(60, 255, 180, 0.15), rgba(17, 17, 17, 0.95));
+                    backdrop-filter: blur(14px) saturate(140%);
                     color: #fff;
                     font-size: 13px;
+                    line-height: 1.45;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 16px;
+                    pointer-events: auto;
                     z-index: 9999;
                     box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
                     opacity: 0;
@@ -82,14 +87,32 @@
                 .smartfilter-progress__loader {
                     width: 32px;
                     height: 32px;
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
                     border-radius: 50%;
                     border: 3px solid rgba(255, 255, 255, 0.2);
                     border-top-color: #5ce0a5;
                     animation: smartfilter-spin 0.85s linear infinite;
+                    position: relative;
+                    box-shadow: 0 0 12px rgba(92, 224, 165, 0.35);
+                }
+
+                .smartfilter-progress__loader--success {
+                    border-color: rgba(124, 252, 202, 0.18);
+                    background: rgba(92, 224, 165, 0.12);
+                    animation: smartfilter-pulse 1.5s ease-out infinite;
+                }
+
+                .smartfilter-progress__loader--success::before {
+                    content: '\2713';
+                    font-size: 18px;
+                    color: #7bffb0;
+                    animation: smartfilter-pop 0.35s ease forwards;
                 }
 
                 .smartfilter-progress--ready .smartfilter-progress__loader {
-                    display: none;
+                    animation: none;
                 }
 
                 .smartfilter-progress__titles {
@@ -113,17 +136,18 @@
                     display: flex;
                     justify-content: space-between;
                     gap: 8px;
-                    margin: 14px 0 10px;
+                    margin: 6px 0 4px;
                     font-size: 12px;
                     color: rgba(255, 255, 255, 0.75);
                 }
 
                 .smartfilter-progress__bar {
                     position: relative;
-                    height: 8px;
+                    height: 10px;
                     border-radius: 999px;
                     background: rgba(255, 255, 255, 0.12);
                     overflow: hidden;
+                    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
                 }
 
                 .smartfilter-progress__bar-inner {
@@ -147,6 +171,7 @@
                     display: flex;
                     flex-direction: column;
                     gap: 8px;
+                    scrollbar-width: thin;
                 }
 
                 .smartfilter-progress__provider {
@@ -157,8 +182,51 @@
                     padding: 10px 12px;
                     border-radius: 12px;
                     background: rgba(255, 255, 255, 0.04);
-                    border: 1px solid rgba(255, 255, 255, 0.06);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
                     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+                    transition: transform 0.25s ease, border 0.25s ease, background 0.25s ease;
+                    position: relative;
+                }
+
+                .smartfilter-progress__provider::after {
+                    content: '';
+                    position: absolute;
+                    inset: 0;
+                    border-radius: 12px;
+                    opacity: 0;
+                    pointer-events: none;
+                    transition: opacity 0.25s ease;
+                    background: linear-gradient(120deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0));
+                    transform: translateX(-30%);
+                }
+
+                .smartfilter-progress__provider--running::after {
+                    opacity: 1;
+                    animation: smartfilter-sheen 1.8s linear infinite;
+                }
+
+                .smartfilter-progress__provider--pending {
+                    border-left: 3px solid #b0bec5;
+                }
+
+                .smartfilter-progress__provider--running {
+                    border-left: 3px solid #64b5f6;
+                }
+
+                .smartfilter-progress__provider--completed {
+                    border-left: 3px solid #66bb6a;
+                }
+
+                .smartfilter-progress__provider--empty {
+                    border-left: 3px solid #ffca28;
+                }
+
+                .smartfilter-progress__provider--error {
+                    border-left: 3px solid #ef5350;
+                }
+
+                .smartfilter-progress__provider:hover {
+                    transform: translateX(4px);
                 }
 
                 .smartfilter-progress__provider-meta {
@@ -191,6 +259,22 @@
                     font-weight: 600;
                     text-transform: uppercase;
                     letter-spacing: 0.05em;
+                    position: relative;
+                    padding-left: 20px;
+                }
+
+                .smartfilter-progress__provider-status::before {
+                    content: '';
+                    position: absolute;
+                    width: 8px;
+                    height: 8px;
+                    left: 8px;
+                    top: 50%;
+                    transform: translate(-50%, -50%);
+                    border-radius: 50%;
+                    background: currentColor;
+                    box-shadow: 0 0 0 0 currentColor;
+                    animation: smartfilter-status-pulse 2s ease infinite;
                 }
 
                 .smartfilter-progress__provider-status--pending {
@@ -223,6 +307,7 @@
                     font-size: 11px;
                     text-align: center;
                     color: rgba(255, 255, 255, 0.5);
+                    letter-spacing: 0.01em;
                 }
 
                 .smartfilter-progress--ready .smartfilter-progress__hint {
@@ -332,6 +417,12 @@
                     100% { background-position: -200% 0; }
                 }
 
+                @keyframes smartfilter-sheen {
+                    0% { opacity: 0; transform: translateX(-50%); }
+                    50% { opacity: 0.65; transform: translateX(0); }
+                    100% { opacity: 0; transform: translateX(50%); }
+                }
+
                 @keyframes smartfilter-fade-in {
                     from { opacity: 0; transform: translate(-50%, -52%) scale(0.95); }
                     to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
@@ -340,6 +431,21 @@
                 @keyframes smartfilter-fade-out {
                     from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
                     to { opacity: 0; transform: translate(-50%, -52%) scale(0.95); }
+                }
+
+                @keyframes smartfilter-pulse {
+                    0%, 100% { box-shadow: 0 0 0 0 rgba(124, 252, 202, 0.22); }
+                    50% { box-shadow: 0 0 0 6px rgba(124, 252, 202, 0); }
+                }
+
+                @keyframes smartfilter-pop {
+                    from { transform: scale(0.6); opacity: 0; }
+                    to { transform: scale(1); opacity: 1; }
+                }
+
+                @keyframes smartfilter-status-pulse {
+                    0%, 100% { box-shadow: 0 0 0 0 currentColor; }
+                    50% { box-shadow: 0 0 0 4px rgba(255, 255, 255, 0); }
                 }
             `;
             document.head.appendChild(style);
@@ -809,6 +915,7 @@
             const completed = data.completed || data.Completed || 0;
             const progress = data.progress || data.ProgressPercentage || data.Progress || 0;
             const progressValue = Math.max(0, Math.min(100, progress));
+            const progressDisplay = Math.round(progressValue);
             const items = data.items || data.Items || 0;
             const providersRaw = data.providers || data.Providers || [];
             const providers = Array.isArray(providersRaw) ? providersRaw : [];
@@ -849,9 +956,13 @@
                     <span class="smartfilter-progress__provider-status smartfilter-progress__provider-status--pending">Ожидание</span>
                 </div>`;
 
+            const loader = ready
+                ? '<div class="smartfilter-progress__loader smartfilter-progress__loader--success"></div>'
+                : '<div class="smartfilter-progress__loader"></div>';
+
             container.innerHTML = `
                 <div class="smartfilter-progress__header">
-                    <div class="smartfilter-progress__loader"></div>
+                    ${loader}
                     <div class="smartfilter-progress__titles">
                         <div class="smartfilter-progress__title">SmartFilter</div>
                         <div class="smartfilter-progress__subtitle">${this.escapeHtml(summarySubtitle)}</div>
@@ -859,7 +970,8 @@
                 </div>
                 <div class="smartfilter-progress__stats">
                     <span>Источников: ${total}</span>
-                    <span>Найдено ссылок: ${items}</span>
+                    <span>Готовность: ${progressDisplay}%</span>
+                    <span>Ссылок: ${items}</span>
                 </div>
                 <div class="smartfilter-progress__bar"><div class="smartfilter-progress__bar-inner" style="width:${progressValue}%"></div></div>
                 <div class="smartfilter-progress__providers">${providersHtml}</div>
