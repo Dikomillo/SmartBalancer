@@ -759,7 +759,7 @@ namespace SmartFilter
             if (!string.IsNullOrWhiteSpace(quality) && json is JObject obj)
                 obj["maxquality"] = quality;
 
-            var html = episodeTpl.ToHtml(voiceTemplate);
+            var html = BuildEpisodeHtml(episodeTpl, voiceTemplate);
             return new AggregatedPayload(json, html);
         }
 
@@ -775,7 +775,7 @@ namespace SmartFilter
                 if (!string.IsNullOrWhiteSpace(quality) && json is JObject obj)
                     obj["maxquality"] = quality;
 
-                var html = tpl.ToHtml(voiceTpl);
+                var html = BuildEpisodeHtml(tpl, voiceTpl);
                 return new AggregatedPayload(json, html);
             }
 
@@ -819,6 +819,20 @@ namespace SmartFilter
             }
 
             return tpl;
+        }
+
+        private static string BuildEpisodeHtml(EpisodeTpl episodeTpl, VoiceTpl? voiceTpl)
+        {
+            string episodeHtml = episodeTpl?.ToHtml() ?? string.Empty;
+            string voiceHtml = voiceTpl?.ToHtml() ?? string.Empty;
+
+            if (string.IsNullOrEmpty(voiceHtml))
+                return episodeHtml;
+
+            if (string.IsNullOrEmpty(episodeHtml))
+                return voiceHtml;
+
+            return voiceHtml + episodeHtml;
         }
 
         private static string CombineNameWithProvider(string baseName, string provider)
