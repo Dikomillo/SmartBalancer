@@ -10,17 +10,47 @@ namespace SmartFilter
 {
     internal static class ResponseRenderer
     {
-        public static string BuildHtml(string type, JArray data, string title, string originalTitle)
+        public static string BuildHtml(string type, JToken data, string title, string originalTitle)
         {
-            if (data == null || data.Count == 0)
+            if (data == null)
+                return string.Empty;
+
+            if (data is JObject grouped)
+            {
+                if (!grouped.Properties().Any())
+                    return string.Empty;
+
+                if (string.Equals(type, "season", StringComparison.OrdinalIgnoreCase))
+                    return BuildGroupedSeasonHtml(grouped);
+
+                data = Flatten(grouped);
+            }
+
+            if (data is not JArray array || array.Count == 0)
                 return string.Empty;
 
             return type switch
             {
-                "season" => BuildSeasonHtml(data),
-                "episode" => BuildEpisodeHtml(data),
-                _ => BuildMovieHtml(data, title, originalTitle)
+                "season" => BuildSeasonHtml(array),
+                "episode" => BuildEpisodeHtml(array),
+                _ => BuildMovieHtml(array, title, originalTitle)
             };
+        }
+
+        private static JArray Flatten(JObject grouped)
+        {
+            var flattened = new JArray();
+
+            foreach (var property in grouped.Properties())
+            {
+                if (property.Value is not JArray providerArray)
+                    continue;
+
+                foreach (var item in providerArray)
+                    flattened.Add(item);
+            }
+
+            return flattened;
         }
 
         private static string BuildMovieHtml(JArray data, string title, string originalTitle)
@@ -129,6 +159,85 @@ namespace SmartFilter
                 html.Append("'><div class=\"videos__season-layers\"></div><div class=\"videos__item-imgbox videos__season-imgbox\"><div class=\"videos__item-title videos__season-title\">");
                 html.Append(WebUtility.HtmlEncode(name));
                 html.Append("</div></div></div>");
+            }
+
+            html.Append("</div>");
+            return html.ToString();
+        }
+
+        private static string BuildGroupedSeasonHtml(JObject groupedData)
+        {
+            var html = new StringBuilder();
+            html.Append("<div class=\"videos__line\" data-smartfilter=\"true\">");
+            bool firstProvider = true;
+
+            foreach (var property in groupedData.Properties().OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                if (property.Value is not JArray seasons || seasons.Count == 0)
+                    continue;
+
+                string providerName = property.Name;
+                bool expand = firstProvider;
+
+                var folderPayload = new JObject
+                {
+                    ["method"] = "folder",
+                    ["provider"] = providerName,
+                    ["count"] = seasons.Count
+                };
+
+                string folderJson = JsonConvert.SerializeObject(folderPayload, Formatting.None);
+
+                html.Append("<div class=\"videos__item videos__season selector");
+                if (firstProvider)
+                {
+                    html.Append(" focused");
+                }
+
+                html.Append("\" data-folder=\"true\" data-provider=\"");
+                html.Append(WebUtility.HtmlEncode(providerName));
+                html.Append("\" data-expanded=\"");
+                html.Append(expand ? "true" : "false");
+                html.Append("\" data-json='");
+                html.Append(WebUtility.HtmlEncode(folderJson));
+                html.Append("'><div class=\"videos__season-layers\"></div><div class=\"videos__item-imgbox videos__season-imgbox\"><div class=\"videos__item-title videos__season-title\">");
+                html.Append(WebUtility.HtmlEncode($"{providerName} ({seasons.Count})"));
+                html.Append("</div></div></div>");
+
+                foreach (var token in seasons.OfType<JObject>())
+                {
+                    string url = token.Value<string>("url") ?? token.Value<string>("link");
+                    if (string.IsNullOrEmpty(url))
+                        continue;
+
+                    string name = token.Value<string>("name") ?? token.Value<string>("title") ?? "Сезон";
+                    string translate = token.Value<string>("translate") ?? token.Value<string>("voice");
+
+                    if (!string.IsNullOrWhiteSpace(translate) && !name.Contains(translate, StringComparison.OrdinalIgnoreCase))
+                        name = $"{name} ({translate})";
+
+                    var dataObj = new JObject
+                    {
+                        ["method"] = "link",
+                        ["url"] = url,
+                        ["provider"] = providerName
+                    };
+
+                    string serialized = JsonConvert.SerializeObject(dataObj, Formatting.None);
+
+                    html.Append("<div class=\"videos__item videos__season selector\" data-folder=\"false\" data-provider=\"");
+                    html.Append(WebUtility.HtmlEncode(providerName));
+                    html.Append("\" data-json='");
+                    html.Append(WebUtility.HtmlEncode(serialized));
+                    html.Append("'");
+                    if (!expand)
+                        html.Append(" style=\"display:none;\"");
+                    html.Append("><div class=\"videos__season-layers\"></div><div class=\"videos__item-imgbox videos__season-imgbox\"><div class=\"videos__item-title videos__season-title\">");
+                    html.Append(WebUtility.HtmlEncode(name));
+                    html.Append("</div></div></div>");
+                }
+
+                firstProvider = false;
             }
 
             html.Append("</div>");

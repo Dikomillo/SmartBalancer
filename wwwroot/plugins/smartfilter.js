@@ -9,6 +9,7 @@
         progressKey: null,
         progressHost: null,
         cachedData: null,
+        cachedItems: null,
         metadata: null,
         metadataTtl: 5 * 60 * 1000,
         autoCloseTimer: null,
@@ -21,6 +22,7 @@
         modalKeyHandler: null,
         modalBackHandler: null,
         previousController: null,
+        folderClickHandler: null,
 
         init() {
             if (!window.Lampa || !Lampa.Template || !document.body) {
@@ -36,6 +38,7 @@
             this.observeSourceList();
             this.ensureFilterButton();
             this.hookXHR();
+            this.bindProviderFolders();
         },
 
         scheduleInit() {
@@ -557,6 +560,7 @@
             this.progressHost = info.origin;
             this.progressKey = info.progressKey;
             this.cachedData = null;
+            this.cachedItems = null;
             this.lastProgressState = null;
             this.progressReady = false;
             this.cancelAutoClose();
@@ -576,13 +580,16 @@
                     return;
 
                 const data = JSON.parse(xhr.responseText);
-                if (!data || !data.data)
+                if (!data)
                     return;
 
+                const flattened = this.flattenItems(data);
                 this.cachedData = data;
-                this.updateFilterButtonState(true);
+                this.cachedItems = flattened;
+                this.updateFilterButtonState(flattened.length > 0);
             } catch (err) {
                 this.cachedData = null;
+                this.cachedItems = null;
                 this.updateFilterButtonState(false);
             }
         },
@@ -642,6 +649,31 @@
             } catch (err) {
                 return url;
             }
+        },
+
+        flattenItems(response) {
+            if (!response)
+                return [];
+
+            if (Array.isArray(response))
+                return response.filter((item) => item && typeof item === 'object');
+
+            if (typeof response !== 'object')
+                return [];
+
+            if (Array.isArray(response.data) || typeof response.data === 'object')
+                return this.flattenItems(response.data);
+
+            if (Array.isArray(response.results) || typeof response.results === 'object')
+                return this.flattenItems(response.results);
+
+            const aggregated = [];
+            Object.values(response).forEach((value) => {
+                if (Array.isArray(value))
+                    aggregated.push(...value.filter((item) => item && typeof item === 'object'));
+            });
+
+            return aggregated;
         },
 
         getFreshMetadata() {
@@ -1138,10 +1170,118 @@
             }
         },
 
+        bindProviderFolders() {
+            if (this.folderClickHandler)
+                return;
+
+            this.folderClickHandler = (event) => {
+                const target = event.target && event.target.closest
+                    ? event.target.closest('.videos__item[data-folder="true"][data-provider][data-json]')
+                    : null;
+                if (!target)
+                    return;
+
+                let payload = null;
+                try {
+                    const json = target.getAttribute('data-json');
+                    payload = json ? JSON.parse(json) : null;
+                } catch (err) {
+                    payload = null;
+                }
+
+                if (!payload || (payload.method || '').toString().toLowerCase() !== 'folder')
+                    return;
+
+                event.preventDefault();
+                event.stopPropagation();
+                if (typeof event.stopImmediatePropagation === 'function')
+                    event.stopImmediatePropagation();
+
+                const provider = target.dataset ? target.dataset.provider : null;
+                if (!provider)
+                    return;
+
+                const container = target.closest ? target.closest('[data-smartfilter="true"]') : null;
+                const expand = target.dataset.expanded !== 'true';
+                target.dataset.expanded = expand ? 'true' : 'false';
+                target.classList.toggle('smartfilter-expanded', expand);
+
+                const scope = container || document;
+                this.syncProviderVisibility(provider, scope);
+
+                if (expand && container && container.querySelector) {
+                    const selector = `.videos__item[data-provider="${this.escapeCssAttr(provider)}"][data-folder="false"]`;
+                    const next = container.querySelector(selector);
+                    if (next && window.Lampa && Lampa.Controller && typeof Lampa.Controller.collectionFocus === 'function')
+                        Lampa.Controller.collectionFocus(next, container);
+                }
+            };
+
+            document.addEventListener('click', this.folderClickHandler, true);
+        },
+
+        syncProviderVisibility(provider, root = document) {
+            if (!provider || !root || typeof root.querySelectorAll !== 'function')
+                return;
+
+            const selector = `[data-provider="${this.escapeCssAttr(provider)}"]`;
+            const items = root.querySelectorAll(selector);
+            if (!items.length)
+                return;
+
+            let folder = null;
+            items.forEach((item) => {
+                if (item.dataset && item.dataset.folder === 'true')
+                    folder = item;
+            });
+
+            const expanded = folder ? folder.dataset.expanded === 'true' : true;
+
+            items.forEach((item) => {
+                if (item === folder)
+                    return;
+
+                const dataset = item.dataset || {};
+                const hiddenByFilter = dataset.hiddenByFilter === 'true';
+
+                if (hiddenByFilter || !expanded)
+                    item.style.display = 'none';
+                else
+                    item.style.display = '';
+            });
+        },
+
+        syncAllProviderVisibility(root = document) {
+            if (!root || typeof root.querySelectorAll !== 'function')
+                return;
+
+            const providers = new Set();
+            root.querySelectorAll('[data-folder="true"][data-provider]').forEach((folder) => {
+                const provider = folder.dataset ? folder.dataset.provider : null;
+                if (provider)
+                    providers.add(provider);
+            });
+
+            providers.forEach((provider) => this.syncProviderVisibility(provider, root));
+        },
+
+        escapeCssAttr(value) {
+            if (typeof value !== 'string')
+                return '';
+
+            if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+                return CSS.escape(value);
+
+            return value
+                .replace(/\\/g, '\\\\')
+                .replace(/"/g, '\\"')
+                .replace(/([\^$*+?.()|[\]{}])/g, '\\$1');
+        },
+
         openFilterModal() {
             this.closeFilterModal();
 
-            if (!this.cachedData || !this.cachedData.data || !this.cachedData.data.length) {
+            if (!Array.isArray(this.cachedItems) || !this.cachedItems.length) {
                 if (window.Lampa && Lampa.Toast)
                     Lampa.Toast.show('Данные еще загружаются', 2500);
                 return;
@@ -1150,12 +1290,19 @@
             const voices = new Map();
             const qualities = new Map();
 
-            this.cachedData.data.forEach((item) => {
-                const translate = item.translate || item.voice || 'Оригинал';
+            this.cachedItems.forEach((item) => {
+                if (!item || typeof item !== 'object')
+                    return;
+
+                const translateSource = item.translate || item.voice || 'Оригинал';
+                const translate = translateSource !== null && translateSource !== undefined
+                    ? translateSource.toString()
+                    : 'Оригинал';
                 voices.set(translate, true);
 
-                if (item.maxquality)
-                    qualities.set(item.maxquality, true);
+                const qualitySource = item.maxquality || item.quality;
+                if (qualitySource !== null && qualitySource !== undefined)
+                    qualities.set(qualitySource.toString(), true);
             });
 
             const modal = document.createElement('div');
@@ -1187,8 +1334,8 @@
                 modal.querySelectorAll('.smartfilter-chip').forEach((chip) => chip.classList.remove('active'));
             });
             modal.querySelector('#smartfilter-apply').addEventListener('click', () => {
-                const selectedVoices = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="voice"].active')).map((chipEl) => chipEl.dataset.value);
-                const selectedQuality = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="quality"].active')).map((chipEl) => chipEl.dataset.value);
+                const selectedVoices = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="voice"].active')).map((chip) => chip.dataset.value);
+                const selectedQuality = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="quality"].active')).map((chip) => chip.dataset.value);
                 this.applyFilters(selectedVoices, selectedQuality);
                 closeModal();
             });
@@ -1296,27 +1443,95 @@
             if (!container)
                 return;
 
+            const hasFolders = !!container.querySelector('[data-folder="true"][data-provider]');
+            const voiceList = Array.isArray(voices)
+                ? voices.map((voice) => voice !== null && voice !== undefined ? voice.toString() : '').filter(Boolean)
+                : [];
+            const qualityList = Array.isArray(qualities)
+                ? qualities.map((quality) => quality !== null && quality !== undefined ? quality.toString() : '').filter(Boolean)
+                : [];
+
+            if (!hasFolders) {
+                const items = container.querySelectorAll('.videos__item');
+                items.forEach((item) => {
+                    item.style.display = '';
+                    const dataJson = item.getAttribute('data-json');
+                    if (!dataJson)
+                        return;
+
+                    try {
+                        const payload = JSON.parse(dataJson);
+                        if (payload && (payload.method || '').toString().toLowerCase() === 'folder')
+                            return;
+
+                        const translateSource = payload.translate || payload.voice || 'Оригинал';
+                        const translate = translateSource !== null && translateSource !== undefined
+                            ? translateSource.toString()
+                            : 'Оригинал';
+                        const qualitySource = payload.maxquality || payload.quality;
+                        const maxquality = qualitySource !== null && qualitySource !== undefined
+                            ? qualitySource.toString()
+                            : '';
+
+                        const voiceMatch = !voiceList.length || voiceList.includes(translate);
+                        const qualityMatch = !qualityList.length || !maxquality || qualityList.includes(maxquality);
+
+                        if (!voiceMatch || !qualityMatch)
+                            item.style.display = 'none';
+                    } catch (err) {
+                        /* ignore */
+                    }
+                });
+
+                return;
+            }
+
             const items = container.querySelectorAll('.videos__item');
-            items.forEach((item, index) => {
-                item.style.display = '';
-                const dataJson = item.getAttribute('data-json');
-                if (!dataJson)
+            items.forEach((item) => {
+                if (!item.dataset)
                     return;
 
-                try {
-                    const payload = JSON.parse(dataJson);
-                    const translate = payload.translate || payload.voice || 'Оригинал';
-                    const maxquality = payload.maxquality || payload.quality;
+                if (item.dataset.folder === 'true')
+                    return;
 
-                    const voiceMatch = !voices.length || voices.includes(translate);
-                    const qualityMatch = !qualities.length || qualities.includes(maxquality);
-
-                    if (!voiceMatch || !qualityMatch)
-                        item.style.display = 'none';
-                } catch (err) {
-                    /* ignore */
+                const dataJson = item.getAttribute('data-json');
+                if (!dataJson) {
+                    delete item.dataset.hiddenByFilter;
+                    return;
                 }
+
+                let payload = null;
+                try {
+                    payload = JSON.parse(dataJson);
+                } catch (err) {
+                    delete item.dataset.hiddenByFilter;
+                    return;
+                }
+
+                if (!payload || (payload.method || '').toString().toLowerCase() === 'folder') {
+                    delete item.dataset.hiddenByFilter;
+                    return;
+                }
+
+                const translateSource = payload.translate || payload.voice || 'Оригинал';
+                const translate = translateSource !== null && translateSource !== undefined
+                    ? translateSource.toString()
+                    : 'Оригинал';
+                const qualitySource = payload.maxquality || payload.quality;
+                const maxquality = qualitySource !== null && qualitySource !== undefined
+                    ? qualitySource.toString()
+                    : '';
+
+                const voiceMatch = !voiceList.length || voiceList.includes(translate);
+                const qualityMatch = !qualityList.length || !maxquality || qualityList.includes(maxquality);
+
+                if (!voiceMatch || !qualityMatch)
+                    item.dataset.hiddenByFilter = 'true';
+                else
+                    delete item.dataset.hiddenByFilter;
             });
+
+            this.syncAllProviderVisibility(container);
         }
     };
 

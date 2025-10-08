@@ -82,7 +82,7 @@ namespace SmartFilter
 
                 SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
 
-                if (aggregation.Data == null || aggregation.Data.Count == 0)
+                if (IsEmpty(aggregation.Data))
                     return OnError("Контент не найден");
 
                 var providerStatus = aggregation.Providers
@@ -158,6 +158,28 @@ namespace SmartFilter
         }
 
         private bool IsAjaxRequest => HttpContext.Request.Headers["X-Requested-With"] == "XMLHttpRequest";
+
+        private static bool IsEmpty(JToken token)
+        {
+            if (token == null)
+                return true;
+
+            if (token is JArray array)
+                return array.Count == 0;
+
+            if (token is JObject obj)
+            {
+                foreach (var property in obj.Properties())
+                {
+                    if (property.Value is JArray nested && nested.Count > 0)
+                        return false;
+                }
+
+                return !obj.Properties().Any();
+            }
+
+            return !token.HasValues;
+        }
 
         private static string ResolveContentType(int serial)
         {
