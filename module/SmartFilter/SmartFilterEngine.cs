@@ -1070,7 +1070,7 @@ namespace SmartFilter
 
         private static string BuildEpisodeHtml(EpisodeTpl episodeTpl, VoiceTpl? voiceTpl)
         {
-            string episodeHtml = episodeTpl?.ToHtml() ?? string.Empty;
+            string episodeHtml = episodeTpl.ToHtml() ?? string.Empty;
             string voiceHtml = voiceTpl?.ToHtml() ?? string.Empty;
 
             if (string.IsNullOrEmpty(voiceHtml))
@@ -1903,7 +1903,7 @@ namespace SmartFilter
                 if (LooksLikeEpisode(obj))
                 {
                     yield return obj;
-                    return;
+                    yield break;
                 }
 
                 foreach (var property in obj.Properties())
