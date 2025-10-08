@@ -47,6 +47,7 @@ namespace SmartFilter
             [FromQuery] int year = 0,
             [FromQuery] int serial = -1,
             [FromQuery] string original_language = null,
+            [FromQuery] string provider = null,
             [FromQuery] bool rjson = false)
         {
             try
@@ -57,7 +58,7 @@ namespace SmartFilter
                 {
                     var responseObject = new JObject
                     {
-                        ["type"] = ResolveContentType(serial),
+                        ["type"] = ResolveContentType(serial, provider),
                         ["title"] = title ?? original_title ?? string.Empty,
                         ["year"] = year
                     };
@@ -75,9 +76,13 @@ namespace SmartFilter
                 var engine = new SmartFilterEngine(memoryCache, host, HttpContext);
                 var aggregation = await InvokeCache(cacheKey,
                     TimeSpan.FromMinutes(Math.Max(1, ModInit.conf.cacheTimeMinutes)),
-                    () => engine.AggregateProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language, requestedSeason, progressKey));
+                    () => engine.AggregateProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language, provider, requestedSeason, progressKey));
 
-                aggregation ??= new AggregationResult { Type = serial == 1 ? "season" : "movie", ProgressKey = progressKey };
+                aggregation ??= new AggregationResult
+                {
+                    Type = ResolveAggregationType(serial, provider, requestedSeason),
+                    ProgressKey = progressKey
+                };
                 aggregation.ProgressKey ??= progressKey;
 
                 SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
@@ -181,14 +186,27 @@ namespace SmartFilter
             return !token.HasValues;
         }
 
-        private static string ResolveContentType(int serial)
+        private static string ResolveContentType(int serial, string provider)
         {
             return serial switch
             {
-                1 => "season",
+                1 => string.IsNullOrWhiteSpace(provider) ? "similar" : "season",
                 2 => "episode",
                 _ => "movie"
             };
+        }
+
+        private static string ResolveAggregationType(int serial, string provider, int requestedSeason)
+        {
+            if (serial == 1)
+            {
+                if (requestedSeason > 0)
+                    return "episode";
+
+                return string.IsNullOrWhiteSpace(provider) ? "similar" : "season";
+            }
+
+            return serial == 2 ? "episode" : "movie";
         }
     }
 }

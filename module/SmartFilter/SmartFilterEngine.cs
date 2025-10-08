@@ -83,14 +83,22 @@ namespace SmartFilter
             semaphore = new SemaphoreSlim(Math.Max(1, ModInit.conf.maxParallelRequests));
         }
 
-        public async Task<AggregationResult> AggregateProvidersAsync(string imdbId, long kinopoiskId, string title, string originalTitle, int year, int serial, string originalLanguage, int requestedSeason, string progressKey)
+        public async Task<AggregationResult> AggregateProvidersAsync(string imdbId, long kinopoiskId, string title, string originalTitle, int year, int serial, string originalLanguage, string providerFilter, int requestedSeason, string progressKey)
         {
             var baseQuery = BuildBaseQueryParameters(imdbId, kinopoiskId, title, originalTitle, year, serial, originalLanguage);
             var providers = await GetActiveProvidersAsync(baseQuery, serial);
 
+            if (!string.IsNullOrWhiteSpace(providerFilter))
+            {
+                providers = providers
+                    .Where(p => string.Equals(p.Name, providerFilter, StringComparison.OrdinalIgnoreCase)
+                             || string.Equals(p.Plugin, providerFilter, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+            }
+
             var aggregation = new AggregationResult
             {
-                Type = DetermineDefaultType(serial, requestedSeason),
+                Type = DetermineDefaultType(serial, providerFilter, requestedSeason),
                 ProgressKey = progressKey
             };
 
@@ -107,9 +115,9 @@ namespace SmartFilter
 
             var successful = results.Where(r => r.Success && r.Payload != null).ToList();
             if (successful.Count > 0)
-                aggregation.Type = DetermineContentType(successful, serial, requestedSeason, aggregation.Type);
+                aggregation.Type = DetermineContentType(successful, serial, providerFilter, requestedSeason, aggregation.Type);
 
-            aggregation.Data = MergePayloads(successful, aggregation.Type);
+            aggregation.Data = BuildAggregationData(successful, aggregation.Type, providerFilter, baseQuery);
             aggregation.Providers = results.Select(r => r.ToStatus()).OrderBy(p => p.Index ?? int.MaxValue).ThenBy(p => p.Name).ToList();
 
             SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
@@ -298,8 +306,11 @@ namespace SmartFilter
             }
         }
 
-        private string DetermineContentType(IEnumerable<ProviderFetchResult> results, int serial, int requestedSeason, string fallback)
+        private string DetermineContentType(IEnumerable<ProviderFetchResult> results, int serial, string providerFilter, int requestedSeason, string fallback)
         {
+            if (serial == 1 && string.IsNullOrWhiteSpace(providerFilter) && requestedSeason <= 0)
+                return "similar";
+
             var contentTypes = results
                 .Select(r => r.ContentType)
                 .Where(type => !string.IsNullOrWhiteSpace(type))
@@ -339,15 +350,32 @@ namespace SmartFilter
             if (!string.IsNullOrWhiteSpace(firstContentType))
                 return firstContentType;
 
-            return fallback ?? DetermineDefaultType(serial, requestedSeason);
+            return fallback ?? DetermineDefaultType(serial, providerFilter, requestedSeason);
         }
 
-        private static string DetermineDefaultType(int serial, int requestedSeason)
+        private static string DetermineDefaultType(int serial, string providerFilter, int requestedSeason)
         {
             if (serial == 1)
-                return requestedSeason > 0 ? "episode" : "season";
+            {
+                if (requestedSeason > 0)
+                    return "episode";
+
+                return string.IsNullOrWhiteSpace(providerFilter) ? "similar" : "season";
+            }
 
             return "movie";
+        }
+
+        private JToken BuildAggregationData(IEnumerable<ProviderFetchResult> results, string expectedType, string providerFilter, Dictionary<string, string> baseQuery)
+        {
+            var providerResults = (results ?? Array.Empty<ProviderFetchResult>()).ToList();
+            if (providerResults.Count == 0)
+                return new JArray();
+
+            if (string.Equals(expectedType, "similar", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(providerFilter))
+                return BuildProviderList(providerResults, baseQuery);
+
+            return MergePayloads(providerResults, expectedType);
         }
 
         private JToken MergePayloads(IEnumerable<ProviderFetchResult> results, string expectedType)
@@ -355,17 +383,6 @@ namespace SmartFilter
             var providerResults = (results ?? Array.Empty<ProviderFetchResult>()).ToList();
             if (providerResults.Count == 0)
                 return new JArray();
-
-            static string ResolveProviderName(ProviderFetchResult result)
-            {
-                if (!string.IsNullOrWhiteSpace(result?.ProviderName))
-                    return result.ProviderName;
-
-                if (!string.IsNullOrWhiteSpace(result?.ProviderPlugin))
-                    return result.ProviderPlugin;
-
-                return "Источник";
-            }
 
             bool groupByProvider = false;
 
@@ -431,6 +448,88 @@ namespace SmartFilter
                 return new JArray();
 
             return grouped;
+        }
+
+        private JArray BuildProviderList(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
+        {
+            var list = new JArray();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var result in providerResults.OrderBy(r => r.ProviderIndex ?? int.MaxValue).ThenBy(r => ResolveProviderName(r)))
+            {
+                if (!result.Success || !result.HasContent)
+                    continue;
+
+                string providerName = ResolveProviderName(result);
+                if (!seen.Add(providerName))
+                    continue;
+
+                var providerQuery = new Dictionary<string, string>(baseQuery, StringComparer.OrdinalIgnoreCase);
+                providerQuery.Remove("s");
+                providerQuery["provider"] = providerName;
+
+                string rjsonValue = httpContext?.Request?.Query["rjson"].ToString();
+                if (!string.IsNullOrWhiteSpace(rjsonValue))
+                    providerQuery["rjson"] = rjsonValue;
+
+                string url = QueryHelpers.AddQueryString($"{host}/lite/smartfilter", providerQuery);
+
+                var item = new JObject
+                {
+                    ["method"] = "link",
+                    ["url"] = url,
+                    ["title"] = providerName,
+                    ["provider"] = providerName
+                };
+
+                string details = BuildProviderDetails(result);
+                if (!string.IsNullOrWhiteSpace(details))
+                    item["details"] = details;
+
+                list.Add(item);
+            }
+
+            return list;
+        }
+
+        private static string BuildProviderDetails(ProviderFetchResult result)
+        {
+            if (result == null || result.ItemsCount <= 0)
+                return null;
+
+            string contentType = result.ContentType?.ToLowerInvariant();
+
+            return contentType switch
+            {
+                "episode" => $"{result.ItemsCount} {FormatCount(result.ItemsCount, "серия", "серии", "серий")}",
+                "season" => $"{result.ItemsCount} {FormatCount(result.ItemsCount, "сезон", "сезона", "сезонов")}",
+                _ => $"{result.ItemsCount} {FormatCount(result.ItemsCount, "вариант", "варианта", "вариантов")}";
+            };
+        }
+
+        private static string ResolveProviderName(ProviderFetchResult result)
+        {
+            if (!string.IsNullOrWhiteSpace(result?.ProviderName))
+                return result.ProviderName;
+
+            if (!string.IsNullOrWhiteSpace(result?.ProviderPlugin))
+                return result.ProviderPlugin;
+
+            return "Источник";
+        }
+
+        private static string FormatCount(int count, string singular, string paucal, string plural)
+        {
+            int mod100 = count % 100;
+            if (mod100 >= 11 && mod100 <= 14)
+                return plural;
+
+            return (count % 10) switch
+            {
+                1 => singular,
+                2 or 3 or 4 => paucal,
+                _ => plural
+            };
         }
 
         private IEnumerable<JToken> ExtractItems(JToken payload, string expectedType)
@@ -550,6 +649,7 @@ namespace SmartFilter
             }
 
             query.Remove("rjson");
+            query.Remove("provider");
 
             if (!string.IsNullOrEmpty(imdbId))
                 query["imdb_id"] = imdbId;
