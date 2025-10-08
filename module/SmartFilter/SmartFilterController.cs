@@ -104,14 +104,31 @@ namespace SmartFilter
 
                 if (rjson)
                 {
+                    bool isSeries = string.Equals(aggregation.Type, "season", StringComparison.OrdinalIgnoreCase) || string.Equals(aggregation.Type, "episode", StringComparison.OrdinalIgnoreCase);
                     var responseObject = new JObject
                     {
                         ["type"] = aggregation.Type,
-                        ["data"] = aggregation.Data,
-                        ["results"] = aggregation.Data,
                         ["providers"] = JArray.FromObject(providerStatus),
                         ["progressKey"] = progressKey
                     };
+
+                    if (isSeries)
+                    {
+                        var (seriesData, voiceData, quality) = SeriesDataHelper.Unpack(aggregation.Data);
+                        responseObject["data"] = seriesData.DeepClone();
+                        responseObject["results"] = seriesData.DeepClone();
+
+                        if (voiceData != null)
+                            responseObject["voice"] = voiceData.DeepClone();
+
+                        if (!string.IsNullOrWhiteSpace(quality))
+                            responseObject["maxquality"] = quality;
+                    }
+                    else
+                    {
+                        responseObject["data"] = aggregation.Data ?? new JArray();
+                        responseObject["results"] = aggregation.Data ?? new JArray();
+                    }
 
                     return Content(responseObject.ToString(Formatting.None), "application/json; charset=utf-8");
                 }

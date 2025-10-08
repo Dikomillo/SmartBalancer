@@ -9,6 +9,7 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.RegularExpressions;
 
 namespace SmartFilter
 {
@@ -372,13 +373,27 @@ namespace SmartFilter
         {
             var providerResults = (results ?? Array.Empty<ProviderFetchResult>()).ToList();
             if (providerResults.Count == 0)
+            {
+                if (IsSeriesType(expectedType))
+                    return CreateEmptySeriesPayload();
+
                 return new JArray();
+            }
 
             if (string.Equals(expectedType, "similar", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(providerFilter))
                 return BuildProviderList(providerResults, baseQuery);
 
+            if (string.Equals(expectedType, "season", StringComparison.OrdinalIgnoreCase))
+                return BuildSeasonPayload(providerResults, baseQuery);
+
+            if (string.Equals(expectedType, "episode", StringComparison.OrdinalIgnoreCase))
+                return BuildEpisodePayload(providerResults, baseQuery);
+
             return MergePayloads(providerResults, expectedType);
         }
+
+        private static bool IsSeriesType(string expectedType)
+            => string.Equals(expectedType, "season", StringComparison.OrdinalIgnoreCase) || string.Equals(expectedType, "episode", StringComparison.OrdinalIgnoreCase);
 
         private JToken MergePayloads(IEnumerable<ProviderFetchResult> results, string expectedType)
         {
@@ -399,11 +414,14 @@ namespace SmartFilter
                         if (item is JObject obj)
                         {
                             // Normalize season items to the shape Lampa expects
-                            if (string.Equals(expectedType, "season", StringComparison.OrdinalIgnoreCase))
-                                NormalizeSeasonItem(obj);
+                        if (string.Equals(expectedType, "season", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!NormalizeSeasonItem(obj, result))
+                                continue;
+                        }
 
-                            if (string.IsNullOrEmpty(obj.Value<string>("provider")))
-                                obj["provider"] = ResolveProviderName(result);
+                        if (string.IsNullOrEmpty(obj.Value<string>("provider")))
+                            obj["provider"] = ResolveProviderName(result);
 
                             if (string.IsNullOrEmpty(obj.Value<string>("balanser")) && !string.IsNullOrEmpty(result.ProviderPlugin))
                                 obj["balanser"] = result.ProviderPlugin;
@@ -437,7 +455,10 @@ namespace SmartFilter
                     if (item is JObject obj)
                     {
                         if (string.Equals(expectedType, "season", StringComparison.OrdinalIgnoreCase))
-                            NormalizeSeasonItem(obj);
+                        {
+                            if (!NormalizeSeasonItem(obj, result))
+                                continue;
+                        }
 
                         if (string.IsNullOrEmpty(obj.Value<string>("provider")))
                             obj["provider"] = providerName;
@@ -459,56 +480,604 @@ namespace SmartFilter
             return grouped;
         }
 
-        private static void NormalizeSeasonItem(JObject obj)
+        private JToken BuildSeasonPayload(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
+        {
+            var seasons = new List<JObject>();
+            var voices = new List<JObject>();
+            var seenSeasonLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenVoiceLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string quality = null;
+            string currentTranslation = GetCurrentTranslation(baseQuery);
+
+            foreach (var result in providerResults)
+            {
+                if (!result.Success || result.Payload == null)
+                    continue;
+
+                quality ??= ExtractQuality(result.Payload);
+
+                foreach (var token in ExtractItems(result.Payload, "season"))
+                {
+                    if (token is not JObject seasonObj)
+                        continue;
+
+                    if (!NormalizeSeasonItem(seasonObj, result))
+                        continue;
+
+                    int? seasonNumber = ExtractSeasonNumber(seasonObj);
+                    string link = BuildSmartFilterUrl(baseQuery, ResolveProviderName(result), seasonNumber, currentTranslation);
+                    if (!string.IsNullOrWhiteSpace(link))
+                        seasonObj["url"] = link;
+
+                    var seasonLink = seasonObj.Value<string>("url") ?? seasonObj.Value<string>("link");
+                    if (!string.IsNullOrWhiteSpace(seasonLink) && !seenSeasonLinks.Add(seasonLink))
+                        continue;
+
+                    seasons.Add(seasonObj);
+                }
+
+                foreach (var voiceToken in ExtractVoiceItems(result.Payload))
+                {
+                    var normalizedVoice = NormalizeVoiceItem(voiceToken, result, baseQuery, null, currentTranslation);
+                    if (normalizedVoice == null)
+                        continue;
+
+                    var voiceLink = normalizedVoice.Value<string>("url");
+                    if (!string.IsNullOrWhiteSpace(voiceLink) && !seenVoiceLinks.Add(voiceLink))
+                        continue;
+
+                    voices.Add(normalizedVoice);
+                }
+            }
+
+            seasons.Sort((left, right) =>
+            {
+                int leftSeason = ExtractSeasonNumber(left) ?? int.MaxValue;
+                int rightSeason = ExtractSeasonNumber(right) ?? int.MaxValue;
+                int compare = leftSeason.CompareTo(rightSeason);
+                if (compare != 0)
+                    return compare;
+
+                return string.Compare(left.Value<string>("provider"), right.Value<string>("provider"), StringComparison.OrdinalIgnoreCase);
+            });
+
+            var payload = new JObject
+            {
+                ["data"] = new JArray(seasons)
+            };
+
+            if (voices.Count > 0)
+                payload["voice"] = new JArray(voices);
+
+            if (!string.IsNullOrWhiteSpace(quality))
+                payload["maxquality"] = quality;
+
+            return payload;
+        }
+
+        private JToken BuildEpisodePayload(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
+        {
+            var episodes = new List<JObject>();
+            var voices = new List<JObject>();
+            var seenEpisodeKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenVoiceLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string quality = null;
+            string currentTranslation = GetCurrentTranslation(baseQuery);
+            int? requestedSeason = GetRequestedSeason(baseQuery);
+
+            foreach (var result in providerResults)
+            {
+                if (!result.Success || result.Payload == null)
+                    continue;
+
+                quality ??= ExtractQuality(result.Payload);
+
+                foreach (var voiceToken in ExtractVoiceItems(result.Payload))
+                {
+                    var normalizedVoice = NormalizeVoiceItem(voiceToken, result, baseQuery, requestedSeason, currentTranslation);
+                    if (normalizedVoice == null)
+                        continue;
+
+                    var voiceLink = normalizedVoice.Value<string>("url");
+                    if (!string.IsNullOrWhiteSpace(voiceLink) && !seenVoiceLinks.Add(voiceLink))
+                        continue;
+
+                    voices.Add(normalizedVoice);
+                }
+
+                foreach (var token in ExtractItems(result.Payload, "episode"))
+                {
+                    if (token is not JObject episodeObj)
+                        continue;
+
+                    if (!NormalizeEpisodeItem(episodeObj, result))
+                        continue;
+
+                    var key = BuildEpisodeKey(episodeObj);
+                    if (!string.IsNullOrWhiteSpace(key) && !seenEpisodeKeys.Add(key))
+                        continue;
+
+                    episodes.Add(episodeObj);
+                }
+            }
+
+            episodes.Sort((left, right) =>
+            {
+                int leftSeason = left.Value<int?>("s") ?? left.Value<int?>("season") ?? int.MaxValue;
+                int rightSeason = right.Value<int?>("s") ?? right.Value<int?>("season") ?? int.MaxValue;
+                int compare = leftSeason.CompareTo(rightSeason);
+                if (compare != 0)
+                    return compare;
+
+                int leftEpisode = left.Value<int?>("e") ?? left.Value<int?>("episode") ?? int.MaxValue;
+                int rightEpisode = right.Value<int?>("e") ?? right.Value<int?>("episode") ?? int.MaxValue;
+                compare = leftEpisode.CompareTo(rightEpisode);
+                if (compare != 0)
+                    return compare;
+
+                return string.Compare(left.Value<string>("provider"), right.Value<string>("provider"), StringComparison.OrdinalIgnoreCase);
+            });
+
+            var payload = new JObject
+            {
+                ["data"] = new JArray(episodes)
+            };
+
+            if (voices.Count > 0)
+                payload["voice"] = new JArray(voices);
+
+            if (!string.IsNullOrWhiteSpace(quality))
+                payload["maxquality"] = quality;
+
+            return payload;
+        }
+
+        private static JObject CreateEmptySeriesPayload()
+        {
+            return new JObject
+            {
+                ["data"] = new JArray()
+            };
+        }
+
+        private bool NormalizeEpisodeItem(JObject obj, ProviderFetchResult source)
+        {
+            if (obj == null)
+                return false;
+
+            if (!EnsureUrl(obj, "url", "link", "stream", "file", "src"))
+                return false;
+
+            EnsureMethod(obj, "play");
+
+            NormalizeIntProperty(obj, "s", "season");
+            NormalizeIntProperty(obj, "season", "s");
+            NormalizeIntProperty(obj, "e", "episode");
+            NormalizeIntProperty(obj, "episode", "e");
+
+            string providerName = ResolveProviderName(source);
+            if (string.IsNullOrWhiteSpace(obj.Value<string>("provider")))
+                obj["provider"] = providerName;
+
+            if (string.IsNullOrWhiteSpace(obj.Value<string>("details")))
+            {
+                var voiceName = obj.Value<string>("voice_name") ?? obj.Value<string>("voice") ?? obj.Value<string>("translate");
+                if (!string.IsNullOrWhiteSpace(voiceName) && !string.Equals(voiceName, providerName, StringComparison.OrdinalIgnoreCase))
+                    obj["details"] = voiceName;
+                else
+                    obj["details"] = providerName;
+            }
+
+            if (string.IsNullOrWhiteSpace(obj.Value<string>("name")))
+            {
+                int? episodeNumber = obj.Value<int?>("e") ?? obj.Value<int?>("episode");
+                if (episodeNumber.HasValue && episodeNumber.Value > 0)
+                    obj["name"] = $"{episodeNumber.Value} серия";
+            }
+
+            if (string.IsNullOrWhiteSpace(obj.Value<string>("title")))
+            {
+                var baseTitle = obj.Value<string>("name");
+                if (!string.IsNullOrWhiteSpace(baseTitle))
+                    obj["title"] = baseTitle;
+            }
+
+            if (obj.TryGetValue("headers", out var headersToken) && headersToken is JArray headersArray)
+            {
+                var headers = new JObject();
+
+                foreach (var entry in headersArray.OfType<JObject>())
+                {
+                    string headerName = entry.Value<string>("name") ?? entry.Value<string>("key");
+                    if (string.IsNullOrWhiteSpace(headerName))
+                        continue;
+
+                    string headerValue = entry.Value<string>("value") ?? entry.Value<string>("val") ?? string.Empty;
+                    headers[headerName] = headerValue;
+                }
+
+                if (headers.Properties().Any())
+                    obj["headers"] = headers;
+                else
+                    obj.Remove("headers");
+            }
+
+            return true;
+        }
+
+        private JObject NormalizeVoiceItem(JToken voiceToken, ProviderFetchResult source, Dictionary<string, string> baseQuery, int? seasonNumber, string currentTranslation)
+        {
+            if (voiceToken is not JObject voiceObj)
+                return null;
+
+            var voice = (JObject)voiceObj.DeepClone();
+
+            if (!EnsureUrl(voice, "url", "link", "file", "stream", "src"))
+                return null;
+
+            EnsureMethod(voice, "link");
+
+            string providerName = ResolveProviderName(source);
+            string translationId = ExtractTranslationId(voice);
+            string link = BuildSmartFilterUrl(baseQuery, providerName, seasonNumber, translationId ?? currentTranslation);
+            if (!string.IsNullOrWhiteSpace(link))
+                voice["url"] = link;
+
+            if (string.IsNullOrWhiteSpace(voice.Value<string>("name")))
+            {
+                var name = voice.Value<string>("title") ?? voice.Value<string>("voice") ?? voice.Value<string>("translation") ?? voice.Value<string>("voice_name");
+                if (string.IsNullOrWhiteSpace(name))
+                    name = providerName;
+
+                voice["name"] = name;
+            }
+
+            voice["active"] = DetermineVoiceActive(voice, currentTranslation, translationId);
+
+            if (string.IsNullOrWhiteSpace(voice.Value<string>("provider")))
+                voice["provider"] = providerName;
+
+            if (string.IsNullOrWhiteSpace(voice.Value<string>("details")))
+                voice["details"] = providerName;
+
+            return voice;
+        }
+
+        private IEnumerable<JObject> ExtractVoiceItems(JToken payload)
+        {
+            if (payload is not JObject obj)
+                yield break;
+
+            foreach (var property in obj.Properties())
+            {
+                if (IsVoiceProperty(property.Name))
+                {
+                    foreach (var item in EnumerateArrayItems(property.Value))
+                    {
+                        if (item is JObject voiceObj)
+                            yield return voiceObj;
+                    }
+                }
+                else if (property.Value is JObject nested)
+                {
+                    foreach (var nestedVoice in ExtractVoiceItems(nested))
+                        yield return nestedVoice;
+                }
+            }
+        }
+
+        private static bool IsVoiceProperty(string propertyName)
+        {
+            if (string.IsNullOrWhiteSpace(propertyName))
+                return false;
+
+            return propertyName.Equals("voice", StringComparison.OrdinalIgnoreCase)
+                || propertyName.Equals("voices", StringComparison.OrdinalIgnoreCase)
+                || propertyName.Equals("voice_list", StringComparison.OrdinalIgnoreCase)
+                || propertyName.Equals("translations", StringComparison.OrdinalIgnoreCase)
+                || propertyName.Equals("translation", StringComparison.OrdinalIgnoreCase)
+                || propertyName.Equals("audio", StringComparison.OrdinalIgnoreCase)
+                || propertyName.Equals("audios", StringComparison.OrdinalIgnoreCase)
+                || propertyName.Equals("sound", StringComparison.OrdinalIgnoreCase)
+                || propertyName.Equals("sounds", StringComparison.OrdinalIgnoreCase)
+                || propertyName.Equals("tracks", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string BuildEpisodeKey(JObject obj)
+        {
+            if (obj == null)
+                return null;
+
+            string url = obj.Value<string>("url") ?? string.Empty;
+            int season = obj.Value<int?>("s") ?? obj.Value<int?>("season") ?? 0;
+            int episode = obj.Value<int?>("e") ?? obj.Value<int?>("episode") ?? 0;
+
+            return $"{season}:{episode}:{url}";
+        }
+
+        private static string ExtractQuality(JToken payload)
+        {
+            if (payload is not JObject obj)
+                return null;
+
+            foreach (var property in obj.Properties())
+            {
+                if (property.Name.Equals("maxquality", StringComparison.OrdinalIgnoreCase) || property.Name.Equals("quality", StringComparison.OrdinalIgnoreCase))
+                {
+                    string value = property.Value?.ToString();
+                    if (!string.IsNullOrWhiteSpace(value))
+                        return value;
+                }
+            }
+
+            foreach (var property in obj.Properties())
+            {
+                if (property.Value is JObject nested)
+                {
+                    string nestedQuality = ExtractQuality(nested);
+                    if (!string.IsNullOrWhiteSpace(nestedQuality))
+                        return nestedQuality;
+                }
+            }
+
+            return null;
+        }
+
+        private string BuildSmartFilterUrl(Dictionary<string, string> baseQuery, string providerName, int? seasonNumber, string translation)
+        {
+            if (string.IsNullOrWhiteSpace(providerName) || string.IsNullOrWhiteSpace(host))
+                return null;
+
+            var query = new Dictionary<string, string>(baseQuery ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase)
+            {
+                ["provider"] = providerName
+            };
+
+            if (seasonNumber.HasValue && seasonNumber.Value > 0)
+                query["s"] = seasonNumber.Value.ToString();
+            else
+                query.Remove("s");
+
+            if (!string.IsNullOrWhiteSpace(translation))
+                query["t"] = translation;
+            else
+                query.Remove("t");
+
+            string rjsonValue = httpContext?.Request?.Query["rjson"].ToString();
+            if (!string.IsNullOrWhiteSpace(rjsonValue))
+                query["rjson"] = rjsonValue;
+            else
+                query.Remove("rjson");
+
+            return QueryHelpers.AddQueryString($"{host}/lite/smartfilter", query);
+        }
+
+        private static string ExtractTranslationId(JObject voice)
+        {
+            if (voice == null)
+                return null;
+
+            foreach (var key in new[] { "translation_id", "translationId", "translation", "translate_id", "id", "voice_id", "voiceId" })
+            {
+                if (voice.TryGetValue(key, out var token))
+                {
+                    string value = token?.ToString();
+                    if (!string.IsNullOrWhiteSpace(value))
+                        return value;
+                }
+            }
+
+            var url = voice.Value<string>("url") ?? voice.Value<string>("link");
+            var queryValue = ExtractQueryParameter(url, "t");
+            if (!string.IsNullOrWhiteSpace(queryValue))
+                return queryValue;
+
+            var translate = voice.Value<string>("translate");
+            if (!string.IsNullOrWhiteSpace(translate))
+                return translate;
+
+            return null;
+        }
+
+        private static string ExtractQueryParameter(string url, string key)
+        {
+            if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(key))
+                return null;
+
+            Uri uri;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
+            {
+                if (!Uri.TryCreate($"http://localhost{url}", UriKind.Absolute, out uri))
+                    return null;
+            }
+
+            var query = QueryHelpers.ParseQuery(uri.Query);
+            return query.TryGetValue(key, out var values) ? values.FirstOrDefault() : null;
+        }
+
+        private static string GetCurrentTranslation(Dictionary<string, string> baseQuery)
+        {
+            if (baseQuery != null && baseQuery.TryGetValue("t", out var translation) && !string.IsNullOrWhiteSpace(translation))
+                return translation;
+
+            return null;
+        }
+
+        private static int? GetRequestedSeason(Dictionary<string, string> baseQuery)
+        {
+            if (baseQuery != null && baseQuery.TryGetValue("s", out var seasonValue) && int.TryParse(seasonValue, out var season) && season > 0)
+                return season;
+
+            return null;
+        }
+
+        private static bool DetermineVoiceActive(JObject voice, string currentTranslation, string translationId)
+        {
+            if (voice.TryGetValue("active", out var activeToken))
+            {
+                if (activeToken.Type == JTokenType.Boolean)
+                    return activeToken.Value<bool>();
+
+                if (activeToken.Type == JTokenType.Integer)
+                    return activeToken.Value<int>() != 0;
+
+                if (activeToken.Type == JTokenType.String)
+                {
+                    var value = activeToken.ToString();
+                    if (bool.TryParse(value, out var boolValue))
+                        return boolValue;
+
+                    if (int.TryParse(value, out var intValue))
+                        return intValue != 0;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(currentTranslation))
+            {
+                if (!string.IsNullOrWhiteSpace(translationId) && string.Equals(currentTranslation, translationId, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                var name = voice.Value<string>("name") ?? voice.Value<string>("title") ?? voice.Value<string>("translate");
+                if (!string.IsNullOrWhiteSpace(name) && string.Equals(currentTranslation, name, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static int? ExtractSeasonNumber(JObject obj)
+        {
+            if (obj == null)
+                return null;
+
+            if (obj.TryGetValue("id", out var idToken) && int.TryParse(idToken.ToString(), out var idValue))
+                return idValue;
+
+            if (obj.TryGetValue("season", out var seasonToken) && int.TryParse(seasonToken.ToString(), out var seasonValue))
+                return seasonValue;
+
+            if (obj.TryGetValue("s", out var sToken) && int.TryParse(sToken.ToString(), out var sValue))
+                return sValue;
+
+            var name = obj.Value<string>("name") ?? obj.Value<string>("title");
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                var match = Regex.Match(name, "(\\d+)");
+                if (match.Success && int.TryParse(match.Value, out var parsed))
+                    return parsed;
+            }
+
+            return null;
+        }
+
+        private static void EnsureMethod(JObject obj, string defaultMethod)
         {
             if (obj == null)
                 return;
 
-            // Ensure id is set from season number if missing
-            if (!obj.TryGetValue("id", out var _) || obj["id"] == null || obj["id"].Type == JTokenType.Null)
+            if (string.IsNullOrWhiteSpace(obj.Value<string>("method")))
+                obj["method"] = defaultMethod;
+        }
+
+        private static bool EnsureUrl(JObject obj, params string[] fallbackKeys)
+        {
+            if (obj == null)
+                return false;
+
+            var url = obj.Value<string>("url");
+            if (!string.IsNullOrWhiteSpace(url))
+                return true;
+
+            foreach (var key in fallbackKeys ?? Array.Empty<string>())
             {
-                var seasonToken = obj["season"] ?? obj["s"];
-                if (seasonToken != null)
+                var value = obj.Value<string>(key);
+                if (!string.IsNullOrWhiteSpace(value))
                 {
-                    if (seasonToken.Type == JTokenType.Integer)
-                        obj["id"] = seasonToken.Value<int>();
-                    else if (int.TryParse(seasonToken.ToString(), out int seasonNum))
-                        obj["id"] = seasonNum;
+                    obj["url"] = value;
+                    return true;
                 }
             }
 
-            // Ensure name
+            return false;
+        }
+
+        private static void NormalizeIntProperty(JObject obj, string key, params string[] aliases)
+        {
+            if (obj == null)
+                return;
+
+            if (TryNormalizeInt(obj, key, obj[key]))
+                return;
+
+            foreach (var alias in aliases ?? Array.Empty<string>())
+            {
+                if (TryNormalizeInt(obj, key, obj[alias]))
+                    return;
+            }
+        }
+
+        private static bool TryNormalizeInt(JObject obj, string key, JToken token)
+        {
+            if (obj == null || token == null || token.Type == JTokenType.Null)
+                return false;
+
+            if (token.Type == JTokenType.Integer)
+            {
+                obj[key] = token.Value<int>();
+                return true;
+            }
+
+            if (int.TryParse(token.ToString(), out var parsed))
+            {
+                obj[key] = parsed;
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool NormalizeSeasonItem(JObject obj, ProviderFetchResult source)
+        {
+            if (obj == null)
+                return false;
+
+            NormalizeIntProperty(obj, "id", "season", "s");
+            NormalizeIntProperty(obj, "season", "id", "s");
+            NormalizeIntProperty(obj, "s", "season", "id");
+
             if (string.IsNullOrWhiteSpace(obj.Value<string>("name")))
             {
-                // Prefer explicit season number
-                int seasonNum = 0;
-                var idToken = obj["id"];
-                if (idToken != null)
+                int? seasonNum = obj.Value<int?>("id") ?? obj.Value<int?>("season") ?? obj.Value<int?>("s");
+                if (seasonNum.HasValue && seasonNum.Value > 0)
+                    obj["name"] = $"{seasonNum.Value} сезон";
+                else
                 {
-                    if (idToken.Type == JTokenType.Integer)
-                        seasonNum = idToken.Value<int>();
-                    else
-                        int.TryParse(idToken.ToString(), out seasonNum);
+                    var title = obj.Value<string>("title");
+                    if (!string.IsNullOrWhiteSpace(title))
+                        obj["name"] = title;
                 }
-
-                var title = obj.Value<string>("title");
-                if (seasonNum > 0)
-                    obj["name"] = $"{seasonNum} сезон";
-                else if (!string.IsNullOrWhiteSpace(title))
-                    obj["name"] = title;
             }
 
-            // Ensure method/url pair for Lampa navigation
-            if (string.IsNullOrWhiteSpace(obj.Value<string>("method")))
-                obj["method"] = "link";
+            EnsureMethod(obj, "link");
 
-            // If url is missing but alternative keys exist, normalize to url
-            if (string.IsNullOrWhiteSpace(obj.Value<string>("url")))
+            if (!EnsureUrl(obj, "link", "file", "stream", "src"))
             {
-                var link = obj.Value<string>("link") ?? obj.Value<string>("file") ?? obj.Value<string>("stream") ?? obj.Value<string>("src");
+                // url will be overwritten later with SmartFilter link, but keep the
+                // original value when possible to avoid empty entries.
+                var link = obj.Value<string>("link");
                 if (!string.IsNullOrWhiteSpace(link))
                     obj["url"] = link;
             }
+
+            string providerName = ResolveProviderName(source);
+
+            if (string.IsNullOrWhiteSpace(obj.Value<string>("provider")))
+                obj["provider"] = providerName;
+
+            if (string.IsNullOrWhiteSpace(obj.Value<string>("details")))
+                obj["details"] = providerName;
+
+            return true;
         }
 
         private JArray BuildProviderList(IEnumerable<ProviderFetchResult> providerResults, Dictionary<string, string> baseQuery)
