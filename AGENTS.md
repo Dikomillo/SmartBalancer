@@ -319,3 +319,336 @@ public async Task<ActionResult> Index(string title, int s = -1, bool rjson = fal
             var online = new List<(dynamic init, string name, string url, string plugin, int index)>(50);
             bool isanime = original_language is "ja" or "zh";
 ```
+Wiki pages you might want to explore:
+- [Key Features and Content Sources (immisterio/Lampac)](/wiki/immisterio/Lampac#1.2)
+
+### Citations
+
+**File:** Shared/Engine/Online/Lumex.cs (L223-234)
+```csharp
+                    if (s == -1)
+                    {
+                        var tpl = new SeasonTpl(result.media.Length);
+
+                        foreach (var media in result.media.OrderBy(s => s.season_id))
+                        {
+                            string link = host + $"lite/lumex?content_id={content_id}&content_type={content_type}&kinopoisk_id={kinopoisk_id}&imdb_id={imdb_id}&rjson={rjson}&title={enc_title}&original_title={enc_original_title}&clarification={clarification}&s={media.season_id}{args}";    
+
+                            tpl.Append($"{media.season_id} сезон", link, media.season_id);
+                        }
+
+                        return rjson ? tpl.ToJson() : tpl.ToHtml();
+```
+
+**File:** Shared/Engine/Online/Lumex.cs (L238-262)
+```csharp
+                        #region Перевод
+                        var vtpl = new VoiceTpl();
+                        var tmpVoice = new HashSet<int>();
+
+                        foreach (var media in result.media)
+                        {
+                            if (media.season_id != s)
+                                continue;
+
+                            foreach (var episode in media.episodes)
+                            {
+                                foreach (var voice in episode.media)
+                                {
+                                    if (tmpVoice.Contains(voice.translation_id))
+                                        continue;
+
+                                    tmpVoice.Add(voice.translation_id);
+
+                                    if (string.IsNullOrEmpty(t))
+                                        t = voice.translation_id.ToString();
+
+                                    vtpl.Append(voice.translation_name, t == voice.translation_id.ToString(), host + $"lite/lumex?content_id={content_id}&content_type={content_type}&kinopoisk_id={kinopoisk_id}&imdb_id={imdb_id}&rjson={rjson}&title={enc_title}&original_title={enc_original_title}&clarification={clarification}&s={s}&t={voice.translation_id}");
+                                }
+                            }
+                        }
+```
+
+**File:** Shared/Engine/Online/Lumex.cs (L268-305)
+```csharp
+                        var etpl = new EpisodeTpl();
+                        string sArhc = s.ToString();
+
+                        foreach (var media in result.media)
+                        {
+                            if (media.season_id != s)
+                                continue;
+
+                            foreach (var episode in media.episodes)
+                            {
+                                foreach (var voice in episode.media)
+                                {
+                                    if (voice.translation_id.ToString() != t)
+                                        continue;
+
+                                    var subtitles = new SubtitleTpl(media.subtitles?.Length ?? 0);
+                                    if (media.subtitles != null && media.subtitles.Length > 0)
+                                    {
+                                        foreach (string srt in media.subtitles)
+                                        {
+                                            string name = Regex.Match(srt, "/([^\\.\\/]+)\\.srt").Groups[1].Value;
+                                            subtitles.Append(name, onstream($"{scheme}:{srt}"));
+                                        }
+                                    }
+
+                                    string link = host + $"lite/lumex/video.m3u8?playlist={HttpUtility.UrlEncode(voice.playlist)}&csrf={result.csrf}&max_quality={voice.max_quality}{args}";
+
+                                    if (bwa || !hls)
+                                    {
+                                        etpl.Append($"{episode.episode_id} серия", title ?? original_title, sArhc, episode.episode_id.ToString(), link.Replace(".m3u8", ""), "call", subtitles: subtitles);
+                                    }
+                                    else
+                                    {
+                                        etpl.Append($"{episode.episode_id} серия", title ?? original_title, sArhc, episode.episode_id.ToString(), link, subtitles: subtitles);
+                                    }
+                                }
+                            }
+                        }
+```
+
+**File:** Shared/Engine/Online/VDBmovies.cs (L208-228)
+```csharp
+                    var vtpl = new VoiceTpl();
+                    var etpl = new EpisodeTpl();
+
+                    var hashvoices = new HashSet<string>();
+
+                    string sArhc = s.ToString();
+
+                    foreach (var episode in root.serial[sid].folder)
+                    {
+                        string ename = Regex.Match(episode.title, "^([0-9]+)").Groups[1].Value;
+
+                        foreach (var voice in episode.folder)
+                        {
+                            string perevod = voice.title;
+                            if (string.IsNullOrEmpty(t))
+                                t = perevod;
+
+                            if (!hashvoices.Contains(perevod))
+                            {
+                                hashvoices.Add(perevod);
+                                vtpl.Append(perevod, t == perevod, host + $"lite/vdbmovies?orid={orid}&imdb_id={imdb_id}&kinopoisk_id={kinopoisk_id}&rjson={rjson}&title={enc_title}&original_title={enc_original_title}&s={s}&sid={sid}&t={HttpUtility.UrlEncode(perevod)}");
+```
+
+**File:** Shared/Engine/Online/KinoPub.cs (L270-310)
+```csharp
+                        #region Перевод
+                        var vtpl = new VoiceTpl();
+                        var hash = new HashSet<string>();
+
+                        foreach (var a in root.item.seasons.First(i => i.number == s).episodes[0].audios)
+                        {
+                            string voice = a?.author?.title ?? a?.type?.title;
+
+                            int? idt = a?.author?.id;
+                            if (idt == null)
+                                idt = a?.type?.id ?? null;
+
+                            if (idt == null)
+                            {
+                                if (a.lang == "eng")
+                                {
+                                    idt = 6;
+                                    voice = "Оригинал";
+                                }
+                                else
+                                {
+                                    idt = 1;
+                                    voice = "По умолчанию";
+                                }
+                            }
+
+                            if (string.IsNullOrEmpty(voice))
+                                continue;
+
+                            if (t == -1)
+                            {
+                                t = (int)idt;
+                                codec = a.codec;
+                            }
+
+                            if (!hash.Contains($"{voice}:{a.codec}"))
+                            {
+                                hash.Add($"{voice}:{a.codec}");
+
+                                string link = host + $"lite/kinopub?rjson={rjson}&postid={postid}&title={enc_title}&original_title={enc_original_title}&s={s}&t={idt}&codec={a.codec}";
+                                bool active = t == idt && (codec == null || codec == a.codec);
+```
+
+Да, ваша текущая реализация **должна работать**, но есть несколько причин, почему может ничего не отображаться<cite/>:
+
+## Возможные проблемы
+
+### 1. Проверьте формат ответа провайдеров
+
+Ваш код ожидает JSON с полями `type` и `data`<cite/>. Убедитесь, что провайдеры Lampac возвращают именно такой формат:
+
+```json
+{
+  "type": "season",
+  "data": [...]
+}
+```
+
+В Lampac провайдеры возвращают разные форматы<cite/>. Например, Lumex возвращает через `SeasonTpl.ToJson()` [1](#3-0) , который создает структуру с `playlist` вместо `data`<cite/>:
+
+```json
+{
+  "playlist": [
+    {"id": 1, "title": "1 сезон", ...}
+  ]
+}
+```
+
+### 2. Проблема с `ExtractItems`
+
+Ваш метод `ExtractItems` ищет поле `data`, но многие провайдеры используют другие поля<cite/>:
+- `playlist` - для сезонов в Filmix [2](#3-1) 
+- `episodes` - для серий в некоторых провайдерах
+- `results` - альтернативное поле
+
+**Решение:** Ваш код уже обрабатывает эти случаи в `ExtractItems`, но проверьте, что он правильно извлекает данные<cite/>.
+
+### 3. Режим "similar" блокирует отображение
+
+Если `serial == 1` и `providerFilter` пустой, ваш код возвращает режим `"similar"` (список провайдеров)<cite/>:
+
+```csharp
+if (serial == 1 && string.IsNullOrWhiteSpace(providerFilter) && requestedSeason <= 0)
+    return "similar";
+```
+
+Это означает, что **сначала пользователь должен выбрать провайдер**, а только потом увидит сезоны<cite/>. Проверьте, что Lampa правильно отображает список провайдеров.
+
+### 4. Отсутствие `method` в элементах
+
+Lampa ожидает поле `method: "link"` для навигации<cite/>. Ваш `NormalizeSeasonItem` добавляет его, но только для сезонов<cite/>. Убедитесь, что все элементы имеют это поле.
+
+## Отладка
+
+Добавьте логирование в ключевых местах:
+
+```csharp
+// В BuildAggregationData
+Console.WriteLine($"BuildAggregationData: expectedType={expectedType}, results={providerResults.Count}");
+
+// В MergePayloads
+Console.WriteLine($"MergePayloads: aggregated {aggregated.Count} items");
+
+// В ExtractItems
+Console.WriteLine($"ExtractItems: payload type={payload.GetType().Name}, expectedType={expectedType}");
+```
+
+Проверьте:
+1. Что `/lite/events` возвращает список провайдеров<cite/>
+2. Что каждый провайдер возвращает валидный JSON с `type` и данными<cite/>
+3. Что `BuildAggregationData` создает непустой массив<cite/>
+4. Что финальный JSON содержит поле `data` с элементами<cite/>
+
+## Пример правильного ответа
+
+Для сезонов (`s == -1`):
+```json
+{
+  "type": "season",
+  "data": [
+    {
+      "id": 1,
+      "name": "1 сезон",
+      "method": "link",
+      "url": "http://host/lite/smartfilter?...&s=1",
+      "provider": "Lumex"
+    }
+  ]
+}
+```
+
+Для серий (`s >= 1`):
+```json
+{
+  "type": "episode",
+  "data": [
+    {
+      "title": "1 серия",
+      "url": "http://...",
+      "episode": 1,
+      "provider": "Lumex"
+    }
+  ]
+}
+```
+
+## Notes
+
+Основная проблема скорее всего в том, что провайдеры Lampac используют разные форматы JSON<cite/>. Ваш код пытается их нормализовать через `ExtractItems` и `NormalizeSeasonItem`, но может не покрывать все случаи<cite/>. Рекомендую:
+
+1. Проверить логи консоли - там должны быть сообщения от `Console.WriteLine`<cite/>
+2. Посмотреть сырой JSON от провайдеров через `/lite/{provider}?rjson=true`<cite/>
+3. Убедиться, что `DetermineContentType` возвращает правильный тип<cite/>
+4. Проверить, что `MergePayloads` не возвращает пустой массив<cite/>
+
+Если проблема сохраняется, покажите пример JSON, который возвращает один из провайдеров, и я помогу адаптировать код под этот формат<cite/>.
+
+Wiki pages you might want to explore:
+- [Key Features and Content Sources (immisterio/Lampac)](/wiki/immisterio/Lampac#1.2)
+
+### Citations
+
+**File:** Online/Controllers/Lumex.cs (L14-27)
+```csharp
+        #region database
+        static List<DatumDB> databaseCache;
+
+        public static IEnumerable<DatumDB> database
+        {
+            get
+            {
+                if (AppInit.conf.multiaccess || databaseCache != null)
+                    return databaseCache ??= JsonHelper.ListReader<DatumDB>("data/lumex.json", 105000);
+
+                return JsonHelper.IEnumerableReader<DatumDB>("data/lumex.json");
+            }
+        }
+        #endregion
+```
+
+**File:** Shared/Engine/Online/Filmix.cs (L331-361)
+```csharp
+                    if (!streamquality.Any())
+                        continue;
+
+                    mtpl.Append(v.translation, streamquality.Firts().link, streamquality: streamquality, vast: vast);
+                }
+
+                return rjson ? mtpl.ToJson() : mtpl.ToHtml();
+                #endregion
+            }
+            else
+            {
+                #region Сериал
+                if (player_links.playlist == null || player_links.playlist.Count == 0)
+                    return string.Empty;
+
+                string enc_title = HttpUtility.UrlEncode(title);
+                string enc_original_title = HttpUtility.UrlEncode(original_title);
+
+                if (s == null)
+                {
+                    #region Сезоны
+                    var tpl = new SeasonTpl(!string.IsNullOrEmpty(root?.quality) ? $"{root.quality.Replace("+", "")}p" : null, player_links.playlist.Count);
+
+                    foreach (var season in player_links.playlist)
+                    {
+                        string link = host + $"lite/filmix?rjson={rjson}&postid={postid}&title={enc_title}&original_title={enc_original_title}&s={season.Key}";
+                        tpl.Append($"{season.Key.Replace("-1", "1")} сезон", link, season.Key);
+                    }
+
+                    return rjson ? tpl.ToJson() : tpl.ToHtml();
+                    #endregion
+```
