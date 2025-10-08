@@ -134,7 +134,7 @@ namespace SmartFilter
                 }
                 else
                 {
-                    var html = ResponseRenderer.BuildHtml(aggregation.Type, aggregation.Data, title, original_title);
+                    var html = aggregation.Html ?? ResponseRenderer.BuildHtml(aggregation.Type, aggregation.Data, title, original_title);
                     if (string.IsNullOrEmpty(html))
                         return OnError("Контент не найден");
 
