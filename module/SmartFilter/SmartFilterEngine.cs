@@ -651,8 +651,8 @@ namespace SmartFilter
                 if (ModInit.conf.enableSeasonFallback)
                 {
                     var fallback = TryBuildSeasonFallback(providerResults, baseQuery, processedVoices, quality, currentTranslation, originalLanguage);
-                    if (fallback != null)
-                        return fallback;
+                    if (fallback.HasValue)
+                        return fallback.Value;
                 }
 
                 var voiceTpl = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
@@ -700,7 +700,7 @@ namespace SmartFilter
             return new AggregatedPayload(json, html);
         }
 
-        private AggregatedPayload TryBuildSeasonFallback(
+        private AggregatedPayload? TryBuildSeasonFallback(
             IEnumerable<ProviderFetchResult> providerResults,
             Dictionary<string, string> baseQuery,
             List<VoiceEntry> strictVoices,
@@ -907,8 +907,8 @@ namespace SmartFilter
                 if (ModInit.conf.enableEpisodeFallback)
                 {
                     var fallback = TryBuildLenientEpisodePayload(providerResults, baseQuery, processedVoices, quality, baseTitle, currentTranslation, originalLanguage, requestedSeason);
-                    if (fallback != null)
-                        return fallback;
+                    if (fallback.HasValue)
+                        return fallback.Value;
                 }
 
                 var voiceTpl = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
@@ -967,7 +967,7 @@ namespace SmartFilter
             return new AggregatedPayload(json, html);
         }
 
-        private AggregatedPayload TryBuildLenientEpisodePayload(
+        private AggregatedPayload? TryBuildLenientEpisodePayload(
             IEnumerable<ProviderFetchResult> providerResults,
             Dictionary<string, string> baseQuery,
             List<VoiceEntry> strictVoices,
@@ -1585,7 +1585,7 @@ namespace SmartFilter
                     obj.Remove("headers");
             }
 
-            return null;
+            return true;
         }
 
         private bool NormalizeEpisodeItem(JObject obj, ProviderFetchResult source)
@@ -1748,7 +1748,7 @@ namespace SmartFilter
         {
             var array = new JArray();
 
-            foreach (var property in obj.Properties().OrderBy(p => ParseLeadingInt(p.Name)).ThenBy(p => p.Name, StringComparison.OrdinalIgnoreCase))
+            foreach (var property in obj.Properties().OrderBy(p => ParseLeadingInt(p.Name)).ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase))
             {
                 array.Add(property.Value);
             }
