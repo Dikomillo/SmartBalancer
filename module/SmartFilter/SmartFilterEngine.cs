@@ -503,7 +503,7 @@ namespace SmartFilter
             {
                 "episode" => $"{result.ItemsCount} {FormatCount(result.ItemsCount, "серия", "серии", "серий")}",
                 "season" => $"{result.ItemsCount} {FormatCount(result.ItemsCount, "сезон", "сезона", "сезонов")}",
-                _ => $"{result.ItemsCount} {FormatCount(result.ItemsCount, "вариант", "варианта", "вариантов")}";
+                _ => $"{result.ItemsCount} {FormatCount(result.ItemsCount, "вариант", "варианта", "вариантов")}"
             };
         }
 
