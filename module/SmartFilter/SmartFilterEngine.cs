@@ -104,6 +104,38 @@ namespace SmartFilter
         private readonly HttpContext httpContext;
         private readonly SemaphoreSlim semaphore;
 
+        private static readonly string[] UkrainianVoiceKeywords =
+        {
+            "укр",
+            "укра",
+            "україн",
+            "украин",
+            "uk",
+            "ua",
+            "ukr"
+        };
+
+        private static readonly string[] RussianVoiceKeywords =
+        {
+            "рус",
+            "рос",
+            "ru",
+            "rus",
+            "russian",
+            "росій",
+            "русск",
+            "росс"
+        };
+
+        private static readonly string[] EnglishVoiceKeywords =
+        {
+            "eng",
+            "англ",
+            "english",
+            "original",
+            "ориг"
+        };
+
         private static readonly Lazy<HttpClient> sharedHttpClient = new(() =>
         {
             var handler = new SocketsHttpHandler
@@ -361,8 +393,13 @@ namespace SmartFilter
             if (serial == 1 && string.IsNullOrWhiteSpace(providerFilter) && requestedSeason <= 0)
                 return "similar";
 
-            var contentTypes = results
+            var rawContentTypes = results
                 .Select(r => r.ContentType)
+                .Where(type => !string.IsNullOrWhiteSpace(type))
+                .ToList();
+
+            var contentTypes = rawContentTypes
+                .Select(type => NormalizeContentType(type, serial, requestedSeason))
                 .Where(type => !string.IsNullOrWhiteSpace(type))
                 .ToList();
 
@@ -396,7 +433,8 @@ namespace SmartFilter
 
             }
 
-            var firstContentType = contentTypes.FirstOrDefault();
+            var firstContentType = contentTypes.FirstOrDefault()
+                ?? NormalizeContentType(rawContentTypes.FirstOrDefault(), serial, requestedSeason);
             if (!string.IsNullOrWhiteSpace(firstContentType))
                 return firstContentType;
 
@@ -535,6 +573,7 @@ namespace SmartFilter
             var seenVoiceLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             string quality = null;
             string currentTranslation = GetCurrentTranslation(baseQuery);
+            string originalLanguage = GetOriginalLanguage(baseQuery);
 
             foreach (var result in providerResults)
             {
@@ -591,9 +630,11 @@ namespace SmartFilter
                 }
             }
 
+            var processedVoices = FilterAndSortVoices(voices, originalLanguage, currentTranslation);
+
             if (seasons.Count == 0)
             {
-                var voiceTpl = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
+                var voiceTpl = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
                 return CreateEmptySeriesPayload("season", voiceTpl, quality);
             }
 
@@ -632,7 +673,7 @@ namespace SmartFilter
                 seasonTpl.Append(displayName, season.Link, season.Number?.ToString() ?? string.Empty);
             }
 
-            var voiceTemplate = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
+            var voiceTemplate = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
             var json = ParseTemplateJson(seasonTpl.ToJson(voiceTemplate));
             var html = seasonTpl.ToHtml(voiceTemplate);
             return new AggregatedPayload(json, html);
@@ -648,6 +689,7 @@ namespace SmartFilter
             string currentTranslation = GetCurrentTranslation(baseQuery);
             int? requestedSeason = GetRequestedSeason(baseQuery);
             string baseTitle = ResolveSeriesTitle(baseQuery);
+            string originalLanguage = GetOriginalLanguage(baseQuery);
 
             foreach (var result in providerResults)
             {
@@ -705,9 +747,11 @@ namespace SmartFilter
                 }
             }
 
+            var processedVoices = FilterAndSortVoices(voices, originalLanguage, currentTranslation);
+
             if (episodes.Count == 0)
             {
-                var voiceTpl = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
+                var voiceTpl = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
                 return CreateEmptySeriesPayload("episode", voiceTpl, quality);
             }
 
@@ -728,7 +772,7 @@ namespace SmartFilter
                 return string.Compare(left.Provider, right.Provider, StringComparison.OrdinalIgnoreCase);
             });
 
-            var voiceTemplate = voices.Count > 0 ? BuildVoiceTemplate(voices) : (VoiceTpl?)null;
+            var voiceTemplate = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
             var episodeTpl = new EpisodeTpl(episodes.Count);
 
             foreach (var episode in episodes)
@@ -819,6 +863,209 @@ namespace SmartFilter
             }
 
             return tpl;
+        }
+
+        private List<VoiceEntry> FilterAndSortVoices(List<VoiceEntry> voices, string originalLanguage, string currentTranslation)
+        {
+            if (voices == null || voices.Count == 0)
+                return new List<VoiceEntry>();
+
+            var uniqueByLink = new Dictionary<string, VoiceEntry>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var voice in voices)
+            {
+                if (voice == null || string.IsNullOrWhiteSpace(voice.Link))
+                    continue;
+
+                if (uniqueByLink.TryGetValue(voice.Link, out var existing))
+                {
+                    if (ComputeVoiceScore(voice, originalLanguage, currentTranslation) > ComputeVoiceScore(existing, originalLanguage, currentTranslation))
+                        uniqueByLink[voice.Link] = voice;
+                }
+                else
+                {
+                    uniqueByLink[voice.Link] = voice;
+                }
+            }
+
+            var filtered = uniqueByLink.Values.ToList();
+            bool hasPreferred = filtered.Any(v => !IsVoiceUnwanted(v.Name));
+            if (hasPreferred)
+                filtered = filtered.Where(v => !IsVoiceUnwanted(v.Name)).ToList();
+
+            var scored = filtered
+                .Select(v => new
+                {
+                    Voice = v,
+                    Score = ComputeVoiceScore(v, originalLanguage, currentTranslation),
+                    NormalizedName = NormalizeVoiceKey(v.Name)
+                })
+                .OrderByDescending(v => v.Score)
+                .ThenByDescending(v => v.Voice.Active)
+                .ThenBy(v => v.NormalizedName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(v => v.Voice.Provider, StringComparer.OrdinalIgnoreCase)
+                .Select(v => new VoiceEntry
+                {
+                    Name = v.Voice.Name,
+                    Active = v.Voice.Active,
+                    Link = v.Voice.Link,
+                    Provider = v.Voice.Provider
+                })
+                .ToList();
+
+            if (scored.Count > 0 && !scored.Any(v => v.Active))
+            {
+                var first = scored[0];
+                scored[0] = new VoiceEntry
+                {
+                    Name = first.Name,
+                    Active = true,
+                    Link = first.Link,
+                    Provider = first.Provider
+                };
+            }
+
+            return scored;
+        }
+
+        private static int ComputeVoiceScore(VoiceEntry voice, string originalLanguage, string currentTranslation)
+        {
+            if (voice == null)
+                return int.MinValue;
+
+            int score = 0;
+
+            if (voice.Active)
+                score += 200;
+
+            if (!string.IsNullOrWhiteSpace(currentTranslation))
+            {
+                if (string.Equals(currentTranslation, voice.Name, StringComparison.OrdinalIgnoreCase))
+                    score += 120;
+                else if (string.Equals(currentTranslation, voice.Provider, StringComparison.OrdinalIgnoreCase))
+                    score += 60;
+            }
+
+            score += GetVoiceLanguageAffinity(voice);
+
+            if (IsPreferredVoiceName(voice.Name))
+                score += 90;
+
+            if (IsPreferredVoiceName(voice.Provider))
+                score += 40;
+
+            if (MatchesOriginalLanguage(voice.Name, originalLanguage))
+                score += 35;
+
+            if (MatchesOriginalLanguage(voice.Provider, originalLanguage))
+                score += 15;
+
+            if (IsVoiceUnwanted(voice.Name))
+                score -= 120;
+
+            if (string.IsNullOrWhiteSpace(voice.Name))
+                score -= 10;
+
+            if (!string.IsNullOrWhiteSpace(voice.Provider))
+                score += 5;
+
+            return score;
+        }
+
+        private static int GetVoiceLanguageAffinity(VoiceEntry voice)
+        {
+            if (voice == null)
+                return 0;
+
+            int affinity = 0;
+
+            if (ContainsAnyKeyword(voice.Name, UkrainianVoiceKeywords) || ContainsAnyKeyword(voice.Provider, UkrainianVoiceKeywords))
+                affinity = Math.Max(affinity, 80);
+
+            if (ContainsAnyKeyword(voice.Name, RussianVoiceKeywords) || ContainsAnyKeyword(voice.Provider, RussianVoiceKeywords))
+                affinity = Math.Max(affinity, 65);
+
+            if (ContainsAnyKeyword(voice.Name, EnglishVoiceKeywords) || ContainsAnyKeyword(voice.Provider, EnglishVoiceKeywords))
+                affinity = Math.Max(affinity, 45);
+
+            return affinity;
+        }
+
+        private static bool MatchesOriginalLanguage(string value, string originalLanguage)
+        {
+            if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(originalLanguage))
+                return false;
+
+            string normalizedLanguage = originalLanguage.ToLowerInvariant();
+
+            if (normalizedLanguage.StartsWith("uk") || normalizedLanguage.StartsWith("ua"))
+                return ContainsAnyKeyword(value, UkrainianVoiceKeywords);
+
+            if (normalizedLanguage.StartsWith("ru"))
+                return ContainsAnyKeyword(value, RussianVoiceKeywords);
+
+            if (normalizedLanguage.StartsWith("en"))
+                return ContainsAnyKeyword(value, EnglishVoiceKeywords);
+
+            return false;
+        }
+
+        private static bool IsPreferredVoiceName(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            string[] preferredKeywords =
+            {
+                "baibako",
+                "muzhd",
+                "dex",
+                "coldfilm",
+                "lostfilm",
+                "newstudio"
+            };
+
+            return ContainsAnyKeyword(value, preferredKeywords);
+        }
+
+        private static bool ContainsAnyKeyword(string value, string[] keywords)
+        {
+            if (string.IsNullOrWhiteSpace(value) || keywords == null || keywords.Length == 0)
+                return false;
+
+            string normalized = value.ToLowerInvariant();
+
+            foreach (var keyword in keywords)
+            {
+                if (string.IsNullOrWhiteSpace(keyword))
+                    continue;
+
+                if (normalized.Contains(keyword))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsVoiceUnwanted(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            string normalized = value.ToLowerInvariant();
+            string[] unwantedKeywords = { "trailer", "трейлер", "анонс", "promo", "караоке", "ost", "саундтрек", "кадр", "тизер" };
+
+            return unwantedKeywords.Any(keyword => normalized.Contains(keyword));
+        }
+
+        private static string NormalizeVoiceKey(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            string normalized = value.Trim().ToLowerInvariant();
+            normalized = Regex.Replace(normalized, @"\s+", " ");
+            return normalized;
         }
 
         private static string BuildEpisodeHtml(EpisodeTpl episodeTpl, VoiceTpl? voiceTpl)
@@ -1100,6 +1347,25 @@ namespace SmartFilter
             return null;
         }
 
+        private static string NormalizeContentType(string contentType, int serial, int requestedSeason)
+        {
+            if (string.IsNullOrWhiteSpace(contentType))
+                return null;
+
+            string normalized = contentType.Trim().ToLowerInvariant();
+
+            return normalized switch
+            {
+                "movie" or "season" or "episode" or "similar" => normalized,
+                "seasons" => "season",
+                "episodes" or "files" or "items" => "episode",
+                "playlist" or "playlists" or "folder" or "folders" or "serial" =>
+                    requestedSeason > 0 ? "episode" : "season",
+                "voice" or "voices" => requestedSeason > 0 ? "episode" : "season",
+                _ => normalized
+            };
+        }
+
         private string BuildSmartFilterUrl(Dictionary<string, string> baseQuery, string providerName, int? seasonNumber, string translation)
         {
             if (string.IsNullOrWhiteSpace(providerName) || string.IsNullOrWhiteSpace(host))
@@ -1111,14 +1377,33 @@ namespace SmartFilter
             };
 
             if (seasonNumber.HasValue && seasonNumber.Value > 0)
-                query["s"] = seasonNumber.Value.ToString();
+            {
+                string seasonValue = seasonNumber.Value.ToString();
+                query["s"] = seasonValue;
+                query["season"] = seasonValue;
+                query["season_number"] = seasonValue;
+            }
             else
+            {
                 query.Remove("s");
+                query.Remove("season");
+                query.Remove("season_number");
+            }
 
             if (!string.IsNullOrWhiteSpace(translation))
+            {
                 query["t"] = translation;
+                query["translate"] = translation;
+                query["translation"] = translation;
+                query["voice"] = translation;
+            }
             else
+            {
                 query.Remove("t");
+                query.Remove("translate");
+                query.Remove("translation");
+                query.Remove("voice");
+            }
 
             string rjsonValue = httpContext?.Request?.Query["rjson"].ToString();
             if (!string.IsNullOrWhiteSpace(rjsonValue))
@@ -1176,6 +1461,14 @@ namespace SmartFilter
         {
             if (baseQuery != null && baseQuery.TryGetValue("t", out var translation) && !string.IsNullOrWhiteSpace(translation))
                 return translation;
+
+            return null;
+        }
+
+        private static string GetOriginalLanguage(Dictionary<string, string> baseQuery)
+        {
+            if (baseQuery != null && baseQuery.TryGetValue("original_language", out var language) && !string.IsNullOrWhiteSpace(language))
+                return language;
 
             return null;
         }
@@ -1456,6 +1749,31 @@ namespace SmartFilter
             if (payload == null)
                 yield break;
 
+            bool expectingSeason = string.Equals(expectedType, "season", StringComparison.OrdinalIgnoreCase);
+            bool expectingEpisode = string.Equals(expectedType, "episode", StringComparison.OrdinalIgnoreCase);
+
+            if (expectingSeason)
+            {
+                var seasonCandidates = ExtractSeasonTokens(payload).ToList();
+                if (seasonCandidates.Count > 0)
+                {
+                    foreach (var season in seasonCandidates)
+                        yield return season.DeepClone();
+                    yield break;
+                }
+            }
+
+            if (expectingEpisode)
+            {
+                var episodeCandidates = ExtractEpisodeTokens(payload).ToList();
+                if (episodeCandidates.Count > 0)
+                {
+                    foreach (var episode in episodeCandidates)
+                        yield return episode.DeepClone();
+                    yield break;
+                }
+            }
+
             if (payload is JObject obj)
             {
                 if (obj.TryGetValue("data", out var dataToken))
@@ -1472,14 +1790,14 @@ namespace SmartFilter
                     yield break;
                 }
 
-                if (expectedType == "episode" && obj.TryGetValue("episodes", out var episodesToken))
+                if (expectingEpisode && obj.TryGetValue("episodes", out var episodesToken))
                 {
                     foreach (var item in EnumerateArrayItems(episodesToken))
                         yield return item.DeepClone();
                     yield break;
                 }
 
-                if (expectedType == "season")
+                if (expectingSeason)
                 {
                     if (obj.TryGetValue("seasons", out var seasonsToken))
                     {
@@ -1534,6 +1852,71 @@ namespace SmartFilter
             }
         }
 
+        private static IEnumerable<JObject> ExtractSeasonTokens(JToken token)
+        {
+            if (token == null)
+                yield break;
+
+            if (token is JArray array)
+            {
+                foreach (var item in array)
+                {
+                    foreach (var season in ExtractSeasonTokens(item))
+                        yield return season;
+                }
+                yield break;
+            }
+
+            if (token is JObject obj)
+            {
+                if (LooksLikeSeason(obj))
+                    yield return obj;
+
+                foreach (var property in obj.Properties())
+                {
+                    if (property.Value == null || property.Value.Type == JTokenType.Null)
+                        continue;
+
+                    foreach (var season in ExtractSeasonTokens(property.Value))
+                        yield return season;
+                }
+            }
+        }
+
+        private static IEnumerable<JObject> ExtractEpisodeTokens(JToken token)
+        {
+            if (token == null)
+                yield break;
+
+            if (token is JArray array)
+            {
+                foreach (var item in array)
+                {
+                    foreach (var episode in ExtractEpisodeTokens(item))
+                        yield return episode;
+                }
+                yield break;
+            }
+
+            if (token is JObject obj)
+            {
+                if (LooksLikeEpisode(obj))
+                {
+                    yield return obj;
+                    return;
+                }
+
+                foreach (var property in obj.Properties())
+                {
+                    if (property.Value == null || property.Value.Type == JTokenType.Null)
+                        continue;
+
+                    foreach (var episode in ExtractEpisodeTokens(property.Value))
+                        yield return episode;
+                }
+            }
+        }
+
         private static int CountItems(JToken token)
         {
             if (token == null)
@@ -1551,6 +1934,89 @@ namespace SmartFilter
             }
 
             return 0;
+        }
+
+        private static bool LooksLikeSeason(JObject obj)
+        {
+            if (obj == null)
+                return false;
+
+            if (obj.TryGetValue("type", out var typeToken))
+            {
+                var typeValue = typeToken?.ToString();
+                if (!string.IsNullOrWhiteSpace(typeValue) && typeValue.IndexOf("season", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            }
+
+            if (obj.TryGetValue("folder", out var folderToken) && ContainsEpisodeCandidate(folderToken))
+                return true;
+
+            if (obj.TryGetValue("playlist", out var playlistToken) && ContainsEpisodeCandidate(playlistToken))
+                return true;
+
+            if (obj.TryGetValue("seasons", out var seasonsToken) && seasonsToken is JArray seasonsArray && seasonsArray.Count > 0)
+                return true;
+
+            if (HasAnyProperty(obj, "season", "s") && !HasAnyProperty(obj, "file", "stream", "src", "url", "link"))
+                return true;
+
+            string title = obj.Value<string>("title") ?? obj.Value<string>("name");
+            if (!string.IsNullOrWhiteSpace(title) && Regex.IsMatch(title, "(сезон|season)", RegexOptions.IgnoreCase))
+                return true;
+
+            return false;
+        }
+
+        private static bool LooksLikeEpisode(JObject obj)
+        {
+            if (obj == null)
+                return false;
+
+            if (obj.TryGetValue("folder", out _) || obj.TryGetValue("playlist", out _))
+                return false;
+
+            if (!HasAnyProperty(obj, "file", "stream", "src", "hls", "url", "link", "manifest", "mpd"))
+                return false;
+
+            if (HasAnyProperty(obj, "voice", "voices", "translations") && !HasAnyProperty(obj, "episode", "e", "name", "title"))
+                return false;
+
+            if (HasAnyProperty(obj, "episode", "e", "serie", "series"))
+                return true;
+
+            if (HasAnyProperty(obj, "season", "s"))
+                return true;
+
+            string title = obj.Value<string>("title") ?? obj.Value<string>("name");
+            if (!string.IsNullOrWhiteSpace(title) && Regex.IsMatch(title, "\\d"))
+                return true;
+
+            return false;
+        }
+
+        private static bool ContainsEpisodeCandidate(JToken token)
+        {
+            if (token == null)
+                return false;
+
+            return ExtractEpisodeTokens(token).Any();
+        }
+
+        private static bool HasAnyProperty(JObject obj, params string[] propertyNames)
+        {
+            if (obj == null || propertyNames == null)
+                return false;
+
+            foreach (var name in propertyNames)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+
+                if (obj.TryGetValue(name, out var token) && token != null && token.Type != JTokenType.Null && !string.IsNullOrWhiteSpace(token.ToString()))
+                    return true;
+            }
+
+            return false;
         }
 
         private Dictionary<string, string> BuildBaseQueryParameters(string imdbId, long kinopoiskId, string title, string originalTitle, int year, int serial, string originalLanguage)
@@ -1616,13 +2082,21 @@ namespace SmartFilter
             if (serial == 1)
             {
                 if (requestedSeason > 0)
-                    query["s"] = requestedSeason.ToString();
+                {
+                    string seasonValue = requestedSeason.ToString();
+                    query["s"] = seasonValue;
+                    query["season"] = seasonValue;
+                }
                 else
-                    query["s"] = "-1";
+                {
+                    query.Remove("s");
+                    query.Remove("season");
+                }
             }
             else if (requestedSeason <= 0)
             {
                 query.Remove("s");
+                query.Remove("season");
             }
         }
 
