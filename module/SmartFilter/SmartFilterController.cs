@@ -51,6 +51,20 @@ namespace SmartFilter
         {
             try
             {
+                bool checkSearch = HttpContext.Request.Query.ContainsKey("checksearch");
+
+                if (checkSearch)
+                {
+                    var responseObject = new JObject
+                    {
+                        ["type"] = ResolveContentType(serial),
+                        ["title"] = title ?? original_title ?? string.Empty,
+                        ["year"] = year
+                    };
+
+                    return Content(responseObject.ToString(Formatting.None), "application/json; charset=utf-8");
+                }
+
                 HttpContext.Response.Headers["X-Timeout"] = "300000";
 
                 var querySnapshot = BuildQueryDictionary(HttpContext.Request.Query);
@@ -143,5 +157,15 @@ namespace SmartFilter
         }
 
         private bool IsAjaxRequest => HttpContext.Request.Headers["X-Requested-With"] == "XMLHttpRequest";
+
+        private static string ResolveContentType(int serial)
+        {
+            return serial switch
+            {
+                1 => "season",
+                2 => "episode",
+                _ => "movie"
+            };
+        }
     }
 }
