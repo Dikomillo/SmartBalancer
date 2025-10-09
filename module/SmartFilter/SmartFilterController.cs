@@ -24,14 +24,6 @@ namespace SmartFilter
         }
 
         [HttpGet]
-        [Route("smartfilter.sfilter.js")]
-        public ContentResult SmartFilterSFilterJS()
-        {
-            var js = FileCache.ReadAllText("plugins/smartfilter.sfilter.js");
-            return Content(js.Replace("{localhost}", host), "application/javascript; charset=utf-8");
-        }
-
-        [HttpGet]
         [Route("lite/smartfilter/progress")]
         public ActionResult Progress([FromQuery] string key)
         {

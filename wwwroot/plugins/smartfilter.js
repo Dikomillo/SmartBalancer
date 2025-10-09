@@ -20,9 +20,15 @@
         originalSend: null,
         folderClickHandler: null,
         legacyMode: false,
-        sfilterModuleCallbacks: null,
-        sfilterLoading: false,
-        moduleBaseUrl: null,
+        sfilterItems: [],
+        sfilterButton: null,
+        sfilterButtonHandler: null,
+        sfilterContainer: null,
+        sfilterModal: null,
+        sfilterKeyHandler: null,
+        sfilterBackHandler: null,
+        sfilterPrevController: null,
+        sfilterControllerName: 'smartfilter-modal',
 
         init() {
             this.ensurePolyfills();
@@ -223,6 +229,18 @@
                 this.addClass(element, className);
             else
                 this.removeClass(element, className);
+        },
+
+        forEachNode(collection, callback) {
+            if (!collection || typeof callback !== 'function')
+                return;
+
+            const items = typeof collection.length === 'number'
+                ? Array.prototype.slice.call(collection)
+                : [];
+
+            for (let i = 0; i < items.length; i += 1)
+                callback(items[i], i);
         },
 
         requestJson(url, onSuccess, onError) {
@@ -769,139 +787,402 @@
         },
 
         ensureSFilterIntegration() {
-            this.ensureSFilterModule((module) => {
-                if (!module)
-                    return;
-
-                if (typeof module.init === 'function')
-                    module.init(this);
-
-                if (typeof module.ensureButton === 'function')
-                    module.ensureButton();
-
-                if (Array.isArray(this.cachedItems) && this.cachedItems.length && typeof module.updateData === 'function') {
-                    const container = document.querySelector('[data-smartfilter="true"]');
-                    module.updateData(this.cachedItems, container || null);
-                }
-            });
+            this.ensureSFilterContainer();
+            this.ensureSFilterButton();
+            this.updateSFilterButtonState();
         },
 
-        ensureSFilterModule(callback) {
-            const module = typeof window !== 'undefined' ? window.SFilterUI : null;
-            if (module && typeof module === 'object') {
-                if (typeof callback === 'function')
-                    callback(module);
+        ensureSFilterContainer() {
+            if (this.sfilterContainer && document.contains(this.sfilterContainer))
+                return this.sfilterContainer;
+
+            const element = document.querySelector('[data-smartfilter="true"]');
+            if (element)
+                this.sfilterContainer = element;
+
+            return this.sfilterContainer;
+        },
+
+        ensureSFilterButton() {
+            const filterBlock = document.querySelector('.filter--filter');
+            if (!filterBlock || !filterBlock.parentElement)
+                return null;
+
+            const parent = filterBlock.parentElement;
+            let button = parent.querySelector('.smartfilter-sfilter-button');
+
+            if (!button) {
+                button = document.createElement('div');
+                button.className = 'simple-button simple-button--filter selector smartfilter-sfilter-button';
+                button.innerHTML = '<span>SFilter</span>';
+                parent.insertBefore(button, filterBlock.nextSibling);
+            }
+
+            if (!this.sfilterButtonHandler)
+                this.sfilterButtonHandler = this.onSFilterButtonClick.bind(this);
+
+            if (!button.__smartfilterSFilterBound) {
+                button.addEventListener('click', this.sfilterButtonHandler);
+                button.__smartfilterSFilterBound = true;
+            }
+
+            this.sfilterButton = button;
+            return button;
+        },
+
+        onSFilterButtonClick(event) {
+            if (event && typeof event.preventDefault === 'function')
+                event.preventDefault();
+
+            if (!Array.isArray(this.sfilterItems) || !this.sfilterItems.length) {
+                if (window.Lampa && Lampa.Toast && typeof Lampa.Toast.show === 'function')
+                    Lampa.Toast.show('Данные еще загружаются', 2500);
                 return;
             }
 
-            if (typeof callback === 'function') {
-                if (!Array.isArray(this.sfilterModuleCallbacks))
-                    this.sfilterModuleCallbacks = [];
-                this.sfilterModuleCallbacks.push(callback);
-            }
+            this.openSFilterModal();
+        },
 
-            if (this.sfilterLoading)
+        updateSFilterButtonState() {
+            const button = this.sfilterButton || this.ensureSFilterButton();
+            if (!button)
                 return;
 
-            this.sfilterLoading = true;
-
-            const script = document.createElement('script');
-            script.async = true;
-            script.src = this.buildModuleUrl('smartfilter.sfilter.js');
-
-            const finalize = (moduleInstance) => {
-                const callbacks = Array.isArray(this.sfilterModuleCallbacks) ? this.sfilterModuleCallbacks : [];
-                this.sfilterModuleCallbacks = null;
-                callbacks.forEach((fn) => {
-                    if (typeof fn === 'function')
-                        fn(moduleInstance);
-                });
-            };
-
-            script.onload = () => {
-                this.sfilterLoading = false;
-                finalize(typeof window !== 'undefined' ? window.SFilterUI : null);
-            };
-
-            script.onerror = () => {
-                this.sfilterLoading = false;
-                finalize(null);
-            };
-
-            (document.head || document.documentElement || document.body || document).appendChild(script);
-        },
-
-        buildModuleUrl(fileName) {
-            const base = this.getModuleBaseUrl();
-            if (!base)
-                return fileName;
-
-            if (base.charAt(base.length - 1) !== '/')
-                return `${base}/${fileName}`;
-
-            return base + fileName;
-        },
-
-        getModuleBaseUrl() {
-            if (this.moduleBaseUrl)
-                return this.moduleBaseUrl;
-
-            if (typeof document !== 'undefined') {
-                const scripts = document.getElementsByTagName('script');
-                const pattern = /(.*\/)smartfilter\.js(?:$|\?)/i;
-
-                for (let i = 0; i < scripts.length; i += 1) {
-                    const script = scripts[i];
-                    if (!script || typeof script.getAttribute !== 'function')
-                        continue;
-
-                    const src = script.getAttribute('src');
-                    if (!src)
-                        continue;
-
-                    const match = src.match(pattern);
-                    if (match && match[1]) {
-                        this.moduleBaseUrl = match[1];
-                        return this.moduleBaseUrl;
-                    }
-                }
-            }
-
-            const location = typeof window !== 'undefined' ? window.location : null;
-            if (location && location.protocol && location.host) {
-                this.moduleBaseUrl = `${location.protocol}//${location.host}/module/smartfilter/`;
-                return this.moduleBaseUrl;
-            }
-
-            this.moduleBaseUrl = '/module/smartfilter/';
-            return this.moduleBaseUrl;
+            if (Array.isArray(this.sfilterItems) && this.sfilterItems.length)
+                this.addClass(button, 'enabled');
+            else
+                this.removeClass(button, 'enabled');
         },
 
         notifySFilterModule(items, options = {}) {
-            const handler = (module) => {
-                if (!module)
+            if (options.container)
+                this.sfilterContainer = options.container;
+            else
+                this.ensureSFilterContainer();
+
+            if (options.reset)
+                this.resetSFilterState();
+
+            if (Array.isArray(items)) {
+                this.sfilterItems = items.filter((item) => item && typeof item === 'object');
+                this.clearSFilterFilters();
+            } else if (!options.reset) {
+                this.sfilterItems = [];
+            }
+
+            this.ensureSFilterButton();
+            this.updateSFilterButtonState();
+        },
+
+        resetSFilterState() {
+            this.closeSFilterModal();
+            this.sfilterItems = [];
+            this.clearSFilterFilters();
+        },
+
+        clearSFilterFilters() {
+            const container = this.ensureSFilterContainer();
+            if (!container)
+                return;
+
+            this.forEachNode(container.querySelectorAll('.videos__item'), (item) => {
+                if (!item)
                     return;
 
-                if (typeof module.init === 'function')
-                    module.init(this);
+                if (item.style)
+                    item.style.display = '';
 
-                if (options.ensureButton && typeof module.ensureButton === 'function')
-                    module.ensureButton();
+                if (item.dataset)
+                    delete item.dataset.hiddenByFilter;
+            });
 
-                if (options.reset && typeof module.reset === 'function')
-                    module.reset();
+            this.syncAllProviderVisibility(container);
+        },
 
-                if (typeof module.updateData === 'function')
-                    module.updateData(items || [], options.container || null);
+        collectSFilterOptions() {
+            const voices = [];
+            const voiceSeen = Object.create(null);
+            const qualities = [];
+            const qualitySeen = Object.create(null);
+
+            (this.sfilterItems || []).forEach((item) => {
+                if (!item || typeof item !== 'object')
+                    return;
+
+                const translateSource = item.translate || item.voice || 'Оригинал';
+                const translate = translateSource !== null && translateSource !== undefined
+                    ? String(translateSource)
+                    : 'Оригинал';
+
+                const normalizedVoice = translate.trim();
+                if (normalizedVoice && !voiceSeen[normalizedVoice]) {
+                    voiceSeen[normalizedVoice] = true;
+                    voices.push(normalizedVoice);
+                }
+
+                const qualitySource = item.maxquality || item.quality;
+                if (qualitySource !== null && qualitySource !== undefined) {
+                    const quality = String(qualitySource).trim();
+                    if (quality && !qualitySeen[quality]) {
+                        qualitySeen[quality] = true;
+                        qualities.push(quality);
+                    }
+                }
+            });
+
+            return { voices, qualities };
+        },
+
+        openSFilterModal() {
+            const { voices, qualities } = this.collectSFilterOptions();
+            if (!voices.length && !qualities.length)
+                return;
+
+            const modal = document.createElement('div');
+            modal.className = 'smartfilter-modal';
+            modal.innerHTML = `
+                <div class="smartfilter-modal__content">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <h2 style="margin:0">SmartFilter</h2>
+                        <button class="simple-button selector" id="smartfilter-modal-close">Закрыть</button>
+                    </div>
+                    <div class="smartfilter-modal__section">
+                        <h3>Озвучки</h3>
+                        <div>${voices.map((voice) => this.createSFilterChip('voice', voice)).join('')}</div>
+                    </div>
+                    <div class="smartfilter-modal__section">
+                        <h3>Качество</h3>
+                        <div>${qualities.map((quality) => this.createSFilterChip('quality', quality)).join('')}</div>
+                    </div>
+                    <div style="margin-top:20px;display:flex;justify-content:flex-end;gap:10px;">
+                        <button class="simple-button selector" id="smartfilter-reset">Сбросить</button>
+                        <button class="simple-button selector" id="smartfilter-apply">Применить</button>
+                    </div>
+                </div>`;
+
+            document.body.appendChild(modal);
+            this.sfilterModal = modal;
+
+            const closeModal = () => this.closeSFilterModal();
+
+            const closeButton = modal.querySelector('#smartfilter-modal-close');
+            if (closeButton)
+                closeButton.addEventListener('click', closeModal);
+
+            const resetButton = modal.querySelector('#smartfilter-reset');
+            if (resetButton)
+                resetButton.addEventListener('click', () => {
+                    this.forEachNode(modal.querySelectorAll('.smartfilter-chip'), (chip) => this.removeClass(chip, 'active'));
+                });
+
+            const applyButton = modal.querySelector('#smartfilter-apply');
+            if (applyButton)
+                applyButton.addEventListener('click', () => {
+                    const selectedVoices = this.getSFilterSelectedValues(modal, 'voice');
+                    const selectedQualities = this.getSFilterSelectedValues(modal, 'quality');
+                    this.applySFilterFilters(selectedVoices, selectedQualities);
+                    closeModal();
+                });
+
+            this.forEachNode(modal.querySelectorAll('.smartfilter-chip'), (chip) => {
+                chip.addEventListener('click', () => this.toggleClass(chip, 'active'));
+            });
+
+            this.sfilterKeyHandler = (event) => {
+                if (!this.isBackNavigation(event))
+                    return;
+
+                event.preventDefault();
+                event.stopPropagation();
+                closeModal();
             };
 
-            const module = typeof window !== 'undefined' ? window.SFilterUI : null;
-            if (module && typeof module.updateData === 'function') {
-                handler(module);
+            window.addEventListener('keydown', this.sfilterKeyHandler, true);
+
+            this.sfilterBackHandler = () => closeModal();
+            document.addEventListener('backbutton', this.sfilterBackHandler, true);
+
+            this.setupSFilterController(modal);
+        },
+
+        closeSFilterModal() {
+            if (!this.sfilterModal)
+                return;
+
+            if (this.sfilterKeyHandler)
+                window.removeEventListener('keydown', this.sfilterKeyHandler, true);
+
+            if (this.sfilterBackHandler)
+                document.removeEventListener('backbutton', this.sfilterBackHandler, true);
+
+            this.sfilterKeyHandler = null;
+            this.sfilterBackHandler = null;
+
+            this.teardownSFilterController();
+
+            if (this.sfilterModal.parentElement)
+                this.sfilterModal.remove();
+
+            this.sfilterModal = null;
+        },
+
+        setupSFilterController(modal) {
+            if (!modal || !window.Lampa || !Lampa.Controller || typeof Lampa.Controller.add !== 'function')
+                return;
+
+            const enabled = typeof Lampa.Controller.enabled === 'function' ? Lampa.Controller.enabled() : null;
+            this.sfilterPrevController = enabled && enabled.name ? enabled.name : null;
+
+            Lampa.Controller.add(this.sfilterControllerName, {
+                toggle: () => {
+                    if (typeof Lampa.Controller.collectionSet === 'function')
+                        Lampa.Controller.collectionSet(modal);
+
+                    const target = modal.querySelector('.smartfilter-chip.active')
+                        || modal.querySelector('#smartfilter-apply')
+                        || modal.querySelector('#smartfilter-modal-close');
+
+                    if (target && typeof Lampa.Controller.collectionFocus === 'function')
+                        Lampa.Controller.collectionFocus(target, modal);
+                },
+                back: () => this.closeSFilterModal()
+            });
+
+            if (typeof Lampa.Controller.toggle === 'function')
+                Lampa.Controller.toggle(this.sfilterControllerName);
+        },
+
+        teardownSFilterController() {
+            if (!window.Lampa || !Lampa.Controller)
+                return;
+
+            if (typeof Lampa.Controller.remove === 'function')
+                Lampa.Controller.remove(this.sfilterControllerName);
+
+            if (this.sfilterPrevController && typeof Lampa.Controller.toggle === 'function')
+                Lampa.Controller.toggle(this.sfilterPrevController);
+
+            this.sfilterPrevController = null;
+        },
+
+        getSFilterSelectedValues(modal, type) {
+            const selected = [];
+            this.forEachNode(modal.querySelectorAll('.smartfilter-chip[data-type="' + type + '"].active'), (chip) => {
+                const value = chip.getAttribute('data-value');
+                if (value)
+                    selected.push(value);
+            });
+            return selected;
+        },
+
+        applySFilterFilters(voices, qualities) {
+            const container = this.ensureSFilterContainer();
+            if (!container)
+                return;
+
+            const voiceList = Array.isArray(voices)
+                ? voices.filter((voice) => voice !== null && voice !== undefined && String(voice).trim() !== '').map((voice) => String(voice))
+                : [];
+            const qualityList = Array.isArray(qualities)
+                ? qualities.filter((quality) => quality !== null && quality !== undefined && String(quality).trim() !== '').map((quality) => String(quality))
+                : [];
+
+            const hasFolders = !!container.querySelector('[data-folder="true"][data-provider]');
+
+            if (!hasFolders) {
+                this.forEachNode(container.querySelectorAll('.videos__item'), (item) => {
+                    if (!item)
+                        return;
+
+                    item.style.display = '';
+
+                    const dataJson = item.getAttribute('data-json');
+                    if (!dataJson)
+                        return;
+
+                    try {
+                        const payload = JSON.parse(dataJson);
+                        if (!payload)
+                            return;
+
+                        if ((payload.method || '').toString().toLowerCase() === 'folder')
+                            return;
+
+                        const translateSource = payload.translate || payload.voice || 'Оригинал';
+                        const translate = translateSource !== null && translateSource !== undefined
+                            ? String(translateSource)
+                            : 'Оригинал';
+                        const qualitySource = payload.maxquality || payload.quality;
+                        const maxquality = qualitySource !== null && qualitySource !== undefined
+                            ? String(qualitySource)
+                            : '';
+
+                        const voiceMatch = !voiceList.length || voiceList.indexOf(translate) !== -1;
+                        const qualityMatch = !qualityList.length || !maxquality || qualityList.indexOf(maxquality) !== -1;
+
+                        if (!voiceMatch || !qualityMatch)
+                            item.style.display = 'none';
+                    } catch (err) {
+                        /* ignore */
+                    }
+                });
+
                 return;
             }
 
-            this.ensureSFilterModule(handler);
+            this.forEachNode(container.querySelectorAll('.videos__item'), (item) => {
+                if (!item || !item.dataset)
+                    return;
+
+                if (item.dataset.folder === 'true')
+                    return;
+
+                const dataJson = item.getAttribute('data-json');
+                if (!dataJson) {
+                    delete item.dataset.hiddenByFilter;
+                    return;
+                }
+
+                let payload = null;
+                try {
+                    payload = JSON.parse(dataJson);
+                } catch (err) {
+                    delete item.dataset.hiddenByFilter;
+                    return;
+                }
+
+                if (!payload || (payload.method || '').toString().toLowerCase() === 'folder') {
+                    delete item.dataset.hiddenByFilter;
+                    return;
+                }
+
+                const translateSource = payload.translate || payload.voice || 'Оригинал';
+                const translate = translateSource !== null && translateSource !== undefined
+                    ? String(translateSource)
+                    : 'Оригинал';
+                const qualitySource = payload.maxquality || payload.quality;
+                const maxquality = qualitySource !== null && qualitySource !== undefined
+                    ? String(qualitySource)
+                    : '';
+
+                const voiceMatch = !voiceList.length || voiceList.indexOf(translate) !== -1;
+                const qualityMatch = !qualityList.length || !maxquality || qualityList.indexOf(maxquality) !== -1;
+
+                if (!voiceMatch || !qualityMatch)
+                    item.dataset.hiddenByFilter = 'true';
+                else
+                    delete item.dataset.hiddenByFilter;
+            });
+
+            this.syncAllProviderVisibility(container);
+        },
+
+        createSFilterChip(type, value) {
+            const safeValue = value !== null && value !== undefined ? String(value) : '';
+            return `<label class="smartfilter-chip" data-type="${type}" data-value="${this.escapeHtml(safeValue)}">
+                <input type="checkbox" />
+                <span>${this.escapeHtml(safeValue)}</span>
+            </label>`;
         },
 
         hookXHR() {
