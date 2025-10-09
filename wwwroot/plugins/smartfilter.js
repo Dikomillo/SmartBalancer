@@ -1,5 +1,9 @@
-(function () {
+
+(function (global) {
     'use strict';
+
+    const window = global;
+    const document = window && window.document ? window.document : null;
 
     const SmartFilter = {
         initAttempts: 0,
@@ -8,6 +12,7 @@
         progressTimer: null,
         progressKey: null,
         progressHost: null,
+        legacyObserverInterval: null,
         cachedData: null,
         cachedItems: null,
         metadata: null,
@@ -23,6 +28,8 @@
         sfilterItems: [],
         sfilterButton: null,
         sfilterButtonHandler: null,
+        sfilterButtonHoverHandler: null,
+        sfilterButtonKeyHandler: null,
         sfilterContainer: null,
         sfilterModal: null,
         sfilterKeyHandler: null,
@@ -34,7 +41,14 @@
             this.ensurePolyfills();
             this.legacyMode = this.detectLegacyMode();
 
-            if (!window.Lampa || !Lampa.Template || !document.body) {
+            if (!document || !document.body) {
+                if (document && typeof setTimeout === 'function')
+                    this.scheduleInit();
+                return;
+            }
+
+            const lampa = window && window.Lampa ? window.Lampa : null;
+            if (!lampa || !lampa.Template) {
                 this.scheduleInit();
                 return;
             }
@@ -165,11 +179,14 @@
         },
 
         detectLegacyMode() {
+            if (!document || typeof document.createElement !== 'function')
+                return false;
+
             const testEl = document.createElement('div');
-            const lacksClassList = !('classList' in testEl);
-            const lacksFetch = typeof window.fetch !== 'function';
-            const lacksCssSupports = !window.CSS || typeof CSS.supports !== 'function';
-            const lacksPromise = typeof window.Promise !== 'function';
+            const lacksClassList = !testEl || !('classList' in testEl);
+            const lacksFetch = !window || typeof window.fetch !== 'function';
+            const lacksCssSupports = !window || !window.CSS || typeof window.CSS.supports !== 'function';
+            const lacksPromise = !window || typeof window.Promise !== 'function';
             return lacksClassList || lacksFetch || lacksCssSupports || lacksPromise;
         },
 
@@ -310,18 +327,18 @@
                     top: 50%;
                     left: 50%;
                     transform: translate(-50%, -50%);
-                    width: min(480px, 94vw);
-                    max-width: 540px;
-                    padding: 26px 28px;
+                    width: min(560px, 96vw);
+                    max-width: 640px;
+                    padding: 32px 34px;
                     border-radius: 20px;
                     background: radial-gradient(circle at top, rgba(60, 255, 180, 0.15), rgba(17, 17, 17, 0.95));
                     backdrop-filter: blur(14px) saturate(140%);
                     color: #fff;
                     font-size: 13px;
-                    line-height: 1.45;
+                    line-height: 1.5;
                     display: flex;
                     flex-direction: column;
-                    gap: 16px;
+                    gap: 18px;
                     pointer-events: auto;
                     z-index: 9999;
                     box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
@@ -331,15 +348,18 @@
                 }
 
                 .smartfilter-progress--legacy {
-                    width: 94vw;
-                    max-width: 420px;
-                    padding: 18px 20px;
+                    width: min(520px, 96vw);
+                    max-width: 560px;
+                    padding: 24px 26px;
                     background: rgba(17, 17, 17, 0.95);
                     border: 1px solid rgba(255, 255, 255, 0.18);
                     box-shadow: 0 18px 34px rgba(0, 0, 0, 0.6);
                     backdrop-filter: none;
                     animation: none;
                     opacity: 1 !important;
+                    line-height: 1.55;
+                    font-size: 13px;
+                    word-break: break-word;
                 }
 
                 .smartfilter-progress--closing {
@@ -349,7 +369,7 @@
                 .smartfilter-progress__header {
                     display: flex;
                     align-items: center;
-                    gap: 14px;
+                    gap: 16px;
                 }
 
                 .smartfilter-progress__loader {
@@ -408,8 +428,8 @@
                 .smartfilter-progress__stats {
                     display: flex;
                     justify-content: space-between;
-                    gap: 8px;
-                    margin: 6px 0 4px;
+                    gap: 10px;
+                    margin: 8px 0 4px;
                     font-size: 12px;
                     color: rgba(255, 255, 255, 0.75);
                 }
@@ -441,9 +461,9 @@
                 }
 
                 .smartfilter-progress__providers {
-                    max-height: 220px;
+                    max-height: 260px;
                     overflow-y: auto;
-                    margin-top: 16px;
+                    margin-top: 18px;
                     padding-right: 4px;
                     display: flex;
                     flex-direction: column;
@@ -529,6 +549,11 @@
                     text-overflow: ellipsis;
                 }
 
+                .smartfilter-progress--legacy .smartfilter-progress__provider-name,
+                .smartfilter-progress--legacy .smartfilter-progress__provider-note {
+                    white-space: normal;
+                }
+
                 .smartfilter-progress__provider-status {
                     padding: 4px 10px;
                     border-radius: 999px;
@@ -580,11 +605,12 @@
                 }
 
                 .smartfilter-progress__hint {
-                    margin-top: 16px;
+                    margin-top: 18px;
                     font-size: 11px;
                     text-align: center;
                     color: rgba(255, 255, 255, 0.5);
                     letter-spacing: 0.01em;
+                    line-height: 1.45;
                 }
 
                 .smartfilter-progress--legacy .smartfilter-progress__hint {
@@ -739,21 +765,26 @@
         },
 
         observeSourceList() {
-            const observer = new MutationObserver(() => {
+            if (!document || !document.body)
+                return;
+
+            const refresh = () => {
                 this.decorateSource();
                 this.ensureSFilterIntegration();
 
                 const container = document.querySelector('[data-smartfilter="true"]');
                 if (container || (this.cachedItems && this.cachedItems.length))
                     this.notifySFilterModule(this.cachedItems || [], { ensureButton: true, container });
-            });
-            observer.observe(document.body, { childList: true, subtree: true });
-            this.decorateSource();
-            this.ensureSFilterIntegration();
+            };
 
-            const initialContainer = document.querySelector('[data-smartfilter="true"]');
-            if (initialContainer || (this.cachedItems && this.cachedItems.length))
-                this.notifySFilterModule(this.cachedItems || [], { ensureButton: true, container: initialContainer });
+            if (typeof MutationObserver === 'function') {
+                const observer = new MutationObserver(refresh);
+                observer.observe(document.body, { childList: true, subtree: true });
+            } else if (!this.legacyObserverInterval && typeof setInterval === 'function') {
+                this.legacyObserverInterval = setInterval(refresh, 800);
+            }
+
+            refresh();
         },
 
         decorateSource() {
@@ -818,11 +849,33 @@
                 parent.insertBefore(button, filterBlock.nextSibling);
             }
 
+            button.setAttribute('role', 'button');
+            button.setAttribute('tabindex', '0');
+            button.setAttribute('aria-label', 'Открыть фильтры SmartFilter');
+
             if (!this.sfilterButtonHandler)
                 this.sfilterButtonHandler = this.onSFilterButtonClick.bind(this);
 
+            if (!this.sfilterButtonHoverHandler)
+                this.sfilterButtonHoverHandler = (event) => this.activateSFilterButton(event);
+
+            if (!this.sfilterButtonKeyHandler)
+                this.sfilterButtonKeyHandler = (event) => {
+                    if (!event)
+                        return;
+
+                    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+                    const keyCode = event.keyCode || event.which || event.detail;
+                    if (key === 'enter' || key === ' ' || key === 'spacebar' || keyCode === 13 || keyCode === 32) {
+                        event.preventDefault();
+                        this.activateSFilterButton(event);
+                    }
+                };
+
             if (!button.__smartfilterSFilterBound) {
                 button.addEventListener('click', this.sfilterButtonHandler);
+                button.addEventListener('hover:enter', this.sfilterButtonHoverHandler);
+                button.addEventListener('keydown', this.sfilterButtonKeyHandler);
                 button.__smartfilterSFilterBound = true;
             }
 
@@ -831,6 +884,10 @@
         },
 
         onSFilterButtonClick(event) {
+            this.activateSFilterButton(event);
+        },
+
+        activateSFilterButton(event) {
             if (event && typeof event.preventDefault === 'function')
                 event.preventDefault();
 
@@ -848,10 +905,15 @@
             if (!button)
                 return;
 
-            if (Array.isArray(this.sfilterItems) && this.sfilterItems.length)
+            const enabled = Array.isArray(this.sfilterItems) && this.sfilterItems.length;
+
+            if (enabled) {
                 this.addClass(button, 'enabled');
-            else
+                button.setAttribute('aria-disabled', 'false');
+            } else {
                 this.removeClass(button, 'enabled');
+                button.setAttribute('aria-disabled', 'true');
+            }
         },
 
         notifySFilterModule(items, options = {}) {
@@ -862,6 +924,12 @@
 
             if (options.reset)
                 this.resetSFilterState();
+
+            if (options.cachedData && typeof options.cachedData === 'object')
+                this.cachedData = options.cachedData;
+
+            if (Array.isArray(options.cachedItems))
+                this.cachedItems = options.cachedItems.slice();
 
             if (Array.isArray(items)) {
                 this.sfilterItems = items.filter((item) => item && typeof item === 'object');
@@ -896,6 +964,7 @@
                     delete item.dataset.hiddenByFilter;
             });
 
+            this.resetTranslationButtons(container);
             this.syncAllProviderVisibility(container);
         },
 
@@ -904,33 +973,273 @@
             const voiceSeen = Object.create(null);
             const qualities = [];
             const qualitySeen = Object.create(null);
+            const visitedVoices = typeof WeakSet === 'function' ? new WeakSet() : null;
+            const visitedQualities = typeof WeakSet === 'function' ? new WeakSet() : null;
 
-            (this.sfilterItems || []).forEach((item) => {
-                if (!item || typeof item !== 'object')
+            const addVoice = (value) => {
+                const label = this.normalizeVoiceLabel(value);
+                const normalized = this.normalizeFilterText(label);
+                if (!normalized || voiceSeen[normalized])
                     return;
 
-                const translateSource = item.translate || item.voice || 'Оригинал';
-                const translate = translateSource !== null && translateSource !== undefined
-                    ? String(translateSource)
-                    : 'Оригинал';
+                voiceSeen[normalized] = true;
+                voices.push(label);
+            };
 
-                const normalizedVoice = translate.trim();
-                if (normalizedVoice && !voiceSeen[normalizedVoice]) {
-                    voiceSeen[normalizedVoice] = true;
-                    voices.push(normalizedVoice);
+            const addQuality = (value) => {
+                if (value === null || value === undefined)
+                    return;
+
+                const label = String(value).trim();
+                const normalized = this.normalizeFilterText(label);
+                if (!normalized || qualitySeen[normalized])
+                    return;
+
+                qualitySeen[normalized] = true;
+                qualities.push(label);
+            };
+
+            const addVoiceCandidate = (value) => {
+                if (value === null || value === undefined)
+                    return;
+
+                if (Array.isArray(value)) {
+                    value.forEach(addVoiceCandidate);
+                    return;
                 }
 
-                const qualitySource = item.maxquality || item.quality;
-                if (qualitySource !== null && qualitySource !== undefined) {
-                    const quality = String(qualitySource).trim();
-                    if (quality && !qualitySeen[quality]) {
-                        qualitySeen[quality] = true;
-                        qualities.push(quality);
-                    }
+                if (typeof value === 'object') {
+                    if (visitedVoices && visitedVoices.has(value))
+                        return;
+
+                    if (visitedVoices)
+                        visitedVoices.add(value);
+
+                    addVoiceCandidate(value.translate || value.voice || value.voice_name || value.voiceName || value.name || value.title || value.label);
+                    if (Array.isArray(value.list))
+                        value.list.forEach(addVoiceCandidate);
+                    if (Array.isArray(value.items))
+                        value.items.forEach(addVoiceCandidate);
+                    return;
                 }
-            });
+
+                addVoice(value);
+            };
+
+            const addQualityCandidate = (value) => {
+                if (value === null || value === undefined)
+                    return;
+
+                if (Array.isArray(value)) {
+                    value.forEach(addQualityCandidate);
+                    return;
+                }
+
+                if (typeof value === 'object') {
+                    if (visitedQualities && visitedQualities.has(value))
+                        return;
+
+                    if (visitedQualities)
+                        visitedQualities.add(value);
+
+                    addQualityCandidate(value.maxquality || value.quality || value.quality_name || value.qualityName || value.label);
+                    return;
+                }
+
+                addQuality(value);
+            };
+
+            const collectFromItem = (item) => {
+                if (!item || typeof item !== 'object') {
+                    addVoiceCandidate(item);
+                    addQualityCandidate(item);
+                    return;
+                }
+
+                if ((visitedVoices && visitedVoices.has(item)) && (visitedQualities && visitedQualities.has(item)))
+                    return;
+
+                if (visitedVoices && !visitedVoices.has(item))
+                    visitedVoices.add(item);
+                if (visitedQualities && !visitedQualities.has(item))
+                    visitedQualities.add(item);
+
+                addVoiceCandidate(item.translate);
+                addVoiceCandidate(item.voice);
+                addVoiceCandidate(item.voice_name);
+                addVoiceCandidate(item.voiceName);
+                addVoiceCandidate(item.voice_list);
+                addVoiceCandidate(item.translation);
+                addVoiceCandidate(item.author);
+                addVoiceCandidate(item.dub);
+
+                addQualityCandidate(item.maxquality);
+                addQualityCandidate(item.maxQuality);
+                addQualityCandidate(item.quality);
+                addQualityCandidate(item.quality_label);
+                addQualityCandidate(item.qualityName);
+                addQualityCandidate(item.video_quality);
+                addQualityCandidate(item.source_quality);
+                addQualityCandidate(item.hd);
+
+                const nestedKeys = ['items', 'results', 'playlist', 'list', 'translations', 'children'];
+                nestedKeys.forEach((key) => {
+                    const nested = item[key];
+                    if (Array.isArray(nested))
+                        nested.forEach(collectFromItem);
+                    else if (nested && typeof nested === 'object')
+                        collectFromItem(nested);
+                });
+            };
+
+            (this.sfilterItems || []).forEach(collectFromItem);
+            (this.cachedItems || []).forEach(collectFromItem);
+
+            const cached = this.cachedData;
+            if (cached && typeof cached === 'object') {
+                addVoiceCandidate(cached.voice || cached.voices);
+                addVoiceCandidate(cached.translations);
+                addQualityCandidate(cached.maxquality);
+                addQualityCandidate(cached.quality);
+
+                const pools = ['results', 'items', 'playlist', 'list'];
+                pools.forEach((key) => {
+                    const value = cached[key];
+                    if (Array.isArray(value))
+                        value.forEach(collectFromItem);
+                });
+
+                if (cached.options && typeof cached.options === 'object') {
+                    addVoiceCandidate(cached.options.voices);
+                    addQualityCandidate(cached.options.qualities);
+                }
+            }
 
             return { voices, qualities };
+        },
+
+        normalizeFilterText(value) {
+            if (value === null || value === undefined)
+                return '';
+
+            return String(value)
+                .trim()
+                .replace(/\s+/g, ' ')
+                .toLowerCase();
+        },
+
+        normalizeVoiceLabel(value) {
+            if (value === null || value === undefined)
+                return 'Оригинал';
+
+            if (Array.isArray(value))
+                return this.normalizeVoiceLabel(value[0]);
+
+            if (typeof value === 'object')
+                return this.normalizeVoiceLabel(value.name || value.title || value.label || value.translate || value.voice || value.voice_name || value.voiceName);
+
+            const text = String(value).trim();
+            if (!text)
+                return 'Оригинал';
+
+            const normalized = this.normalizeFilterText(text);
+            if (normalized === 'original')
+                return 'Оригинал';
+
+            return text;
+        },
+
+        matchesSFilterPayload(payload, voiceFilters, qualityFilters) {
+            if (!payload || typeof payload !== 'object')
+                return false;
+
+            const normalizedVoices = Array.isArray(voiceFilters)
+                ? voiceFilters.map((voice) => this.normalizeFilterText(voice)).filter(Boolean)
+                : [];
+            const normalizedQualities = Array.isArray(qualityFilters)
+                ? qualityFilters.map((quality) => this.normalizeFilterText(quality)).filter(Boolean)
+                : [];
+
+            const voiceValue = payload.translate || payload.voice || payload.voice_name || payload.voiceName || payload.translation || payload.dub;
+            const voiceLabel = this.normalizeVoiceLabel(voiceValue);
+            const normalizedVoice = this.normalizeFilterText(voiceLabel);
+            const hasVoiceFilters = normalizedVoices.length > 0;
+            const voiceMatch = !hasVoiceFilters || normalizedVoices.includes(normalizedVoice);
+
+            const qualityValue = payload.maxquality || payload.maxQuality || payload.quality || payload.quality_label || payload.qualityName || payload.video_quality || payload.source_quality || payload.hd;
+            const normalizedQuality = this.normalizeFilterText(qualityValue);
+            const hasQualityFilters = normalizedQualities.length > 0;
+            const qualityMatch = !hasQualityFilters || !normalizedQuality || normalizedQualities.includes(normalizedQuality);
+
+            return voiceMatch && qualityMatch;
+        },
+
+        resetTranslationButtons(root) {
+            if (!root || typeof root.querySelectorAll !== 'function')
+                return;
+
+            this.forEachNode(this.getTranslationButtons(root), (element) => {
+                if (!element)
+                    return;
+
+                if (element.style)
+                    element.style.display = '';
+
+                if (element.dataset)
+                    delete element.dataset.hiddenByFilter;
+            });
+        },
+
+        updateTranslationButtonsVisibility(root, normalizedVoices) {
+            if (!root || typeof root.querySelectorAll !== 'function')
+                return;
+
+            const allowed = Array.isArray(normalizedVoices)
+                ? normalizedVoices.filter(Boolean)
+                : [];
+            const allowedSet = new Set(allowed);
+            const hasFilter = allowedSet.size > 0;
+
+            this.forEachNode(this.getTranslationButtons(root), (element) => {
+                if (!element)
+                    return;
+
+                const dataset = element.dataset || {};
+                const labelSource = dataset.translate || dataset.voice || dataset.voiceName || dataset.voice_name || dataset.name || element.textContent;
+                const voiceLabel = this.normalizeVoiceLabel(labelSource);
+                const normalized = this.normalizeFilterText(voiceLabel);
+                const alwaysVisible = normalized === 'все' || normalized === 'all';
+                const visible = alwaysVisible || !hasFilter || allowedSet.has(normalized);
+
+                if (element.style)
+                    element.style.display = visible ? '' : 'none';
+
+                if (element.dataset) {
+                    if (visible)
+                        delete element.dataset.hiddenByFilter;
+                    else
+                        element.dataset.hiddenByFilter = 'true';
+                }
+            });
+        },
+
+        getTranslationButtons(root) {
+            if (!root || typeof root.querySelectorAll !== 'function')
+                return [];
+
+            const selectors = [
+                '[data-translate]',
+                '[data-voice]',
+                '[data-voice-name]',
+                '[data-voice_name]',
+                '[data-voicename]',
+                '[data-voiceName]',
+                '.selector[data-name]',
+                '.filter__item[data-name]',
+                '.translations__item[data-name]'
+            ];
+
+            return root.querySelectorAll(selectors.join(','));
         },
 
         openSFilterModal() {
@@ -944,7 +1253,7 @@
                 <div class="smartfilter-modal__content">
                     <div style="display:flex;justify-content:space-between;align-items:center;">
                         <h2 style="margin:0">SmartFilter</h2>
-                        <button class="simple-button selector" id="smartfilter-modal-close">Закрыть</button>
+                        <button class="simple-button selector" id="smartfilter-modal-close">Закрыть окно</button>
                     </div>
                     <div class="smartfilter-modal__section">
                         <h3>Озвучки</h3>
@@ -1081,10 +1390,10 @@
                 return;
 
             const voiceList = Array.isArray(voices)
-                ? voices.filter((voice) => voice !== null && voice !== undefined && String(voice).trim() !== '').map((voice) => String(voice))
+                ? voices.map((voice) => this.normalizeFilterText(voice)).filter(Boolean)
                 : [];
             const qualityList = Array.isArray(qualities)
-                ? qualities.filter((quality) => quality !== null && quality !== undefined && String(quality).trim() !== '').map((quality) => String(quality))
+                ? qualities.map((quality) => this.normalizeFilterText(quality)).filter(Boolean)
                 : [];
 
             const hasFolders = !!container.querySelector('[data-folder="true"][data-provider]');
@@ -1108,25 +1417,16 @@
                         if ((payload.method || '').toString().toLowerCase() === 'folder')
                             return;
 
-                        const translateSource = payload.translate || payload.voice || 'Оригинал';
-                        const translate = translateSource !== null && translateSource !== undefined
-                            ? String(translateSource)
-                            : 'Оригинал';
-                        const qualitySource = payload.maxquality || payload.quality;
-                        const maxquality = qualitySource !== null && qualitySource !== undefined
-                            ? String(qualitySource)
-                            : '';
-
-                        const voiceMatch = !voiceList.length || voiceList.indexOf(translate) !== -1;
-                        const qualityMatch = !qualityList.length || !maxquality || qualityList.indexOf(maxquality) !== -1;
-
-                        if (!voiceMatch || !qualityMatch)
+                        const matches = this.matchesSFilterPayload(payload, voiceList, qualityList);
+                        if (!matches)
                             item.style.display = 'none';
+                        else
+                            item.style.display = '';
                     } catch (err) {
                         /* ignore */
                     }
                 });
-
+                this.updateTranslationButtonsVisibility(container, voiceList);
                 return;
             }
 
@@ -1156,25 +1456,16 @@
                     return;
                 }
 
-                const translateSource = payload.translate || payload.voice || 'Оригинал';
-                const translate = translateSource !== null && translateSource !== undefined
-                    ? String(translateSource)
-                    : 'Оригинал';
-                const qualitySource = payload.maxquality || payload.quality;
-                const maxquality = qualitySource !== null && qualitySource !== undefined
-                    ? String(qualitySource)
-                    : '';
+                const matches = this.matchesSFilterPayload(payload, voiceList, qualityList);
 
-                const voiceMatch = !voiceList.length || voiceList.indexOf(translate) !== -1;
-                const qualityMatch = !qualityList.length || !maxquality || qualityList.indexOf(maxquality) !== -1;
-
-                if (!voiceMatch || !qualityMatch)
+                if (!matches)
                     item.dataset.hiddenByFilter = 'true';
                 else
                     delete item.dataset.hiddenByFilter;
             });
 
             this.syncAllProviderVisibility(container);
+            this.updateTranslationButtonsVisibility(container, voiceList);
         },
 
         createSFilterChip(type, value) {
@@ -1609,6 +1900,48 @@
             }
         },
 
+        ensureProgressStructure(container) {
+            if (!container)
+                return null;
+
+            if (container.__smartfilterStructure)
+                return container.__smartfilterStructure;
+
+            container.innerHTML = `
+                <div class="smartfilter-progress__header">
+                    <div class="smartfilter-progress__loader"></div>
+                    <div class="smartfilter-progress__titles">
+                        <div class="smartfilter-progress__title">SmartFilter</div>
+                        <div class="smartfilter-progress__subtitle" data-smartfilter-subtitle></div>
+                    </div>
+                </div>
+                <div class="smartfilter-progress__stats">
+                    <span data-smartfilter-total></span>
+                    <span data-smartfilter-progress></span>
+                    <span data-smartfilter-items></span>
+                </div>
+                <div class="smartfilter-progress__bar">
+                    <div class="smartfilter-progress__bar-inner" data-smartfilter-bar></div>
+                </div>
+                <div class="smartfilter-progress__providers" data-smartfilter-providers></div>
+                <div class="smartfilter-progress__hint" data-smartfilter-hint></div>
+            `;
+
+            const refs = {
+                loader: container.querySelector('.smartfilter-progress__loader'),
+                subtitle: container.querySelector('[data-smartfilter-subtitle]'),
+                total: container.querySelector('[data-smartfilter-total]'),
+                progress: container.querySelector('[data-smartfilter-progress]'),
+                items: container.querySelector('[data-smartfilter-items]'),
+                bar: container.querySelector('[data-smartfilter-bar]'),
+                providers: container.querySelector('[data-smartfilter-providers]'),
+                hint: container.querySelector('[data-smartfilter-hint]')
+            };
+
+            container.__smartfilterStructure = refs;
+            return refs;
+        },
+
         renderProgress(data) {
             if (!data) {
                 this.hideProgress(true);
@@ -1621,6 +1954,8 @@
                 container.className = 'smartfilter-progress';
                 document.body.appendChild(container);
             }
+
+            const refs = this.ensureProgressStructure(container);
 
             this.removeClass(container, 'smartfilter-progress--closing');
             if (this.legacyMode)
@@ -1675,27 +2010,31 @@
                     <span class="smartfilter-progress__provider-status smartfilter-progress__provider-status--pending">Ожидание</span>
                 </div>`;
 
-            const loader = ready
-                ? '<div class="smartfilter-progress__loader smartfilter-progress__loader--success"></div>'
-                : '<div class="smartfilter-progress__loader"></div>';
+            if (refs.loader) {
+                refs.loader.className = 'smartfilter-progress__loader';
+                this.toggleClass(refs.loader, 'smartfilter-progress__loader--success', ready);
+            }
 
-            container.innerHTML = `
-                <div class="smartfilter-progress__header">
-                    ${loader}
-                    <div class="smartfilter-progress__titles">
-                        <div class="smartfilter-progress__title">SmartFilter</div>
-                        <div class="smartfilter-progress__subtitle">${this.escapeHtml(summarySubtitle)}</div>
-                    </div>
-                </div>
-                <div class="smartfilter-progress__stats">
-                    <span>Источников: ${total}</span>
-                    <span>Готовность: ${progressDisplay}%</span>
-                    <span>Ссылок: ${items}</span>
-                </div>
-                <div class="smartfilter-progress__bar"><div class="smartfilter-progress__bar-inner" style="width:${progressValue}%"></div></div>
-                <div class="smartfilter-progress__providers">${providersHtml}</div>
-                <div class="smartfilter-progress__hint">${this.escapeHtml(hint)}</div>
-            `;
+            if (refs.subtitle)
+                refs.subtitle.textContent = summarySubtitle;
+
+            if (refs.total)
+                refs.total.textContent = `Источников: ${total}`;
+
+            if (refs.progress)
+                refs.progress.textContent = `Готовность: ${progressDisplay}%`;
+
+            if (refs.items)
+                refs.items.textContent = `Ссылок: ${items}`;
+
+            if (refs.bar)
+                refs.bar.style.width = `${progressValue}%`;
+
+            if (refs.providers)
+                refs.providers.innerHTML = providersHtml;
+
+            if (refs.hint)
+                refs.hint.textContent = hint;
 
             if (this.legacyMode) {
                 container.style.opacity = '1';
@@ -1978,5 +2317,12 @@
 
     };
 
-    SmartFilter.init();
-})();
+    if (document)
+        SmartFilter.init();
+
+    if (typeof module !== 'undefined' && module.exports)
+        module.exports = SmartFilter;
+
+    if (window && typeof window === 'object')
+        window.SmartFilter = SmartFilter;
+})(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
