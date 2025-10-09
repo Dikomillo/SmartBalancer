@@ -17,6 +17,8 @@
         cachedItems: null,
         metadata: null,
         metadataTtl: 5 * 60 * 1000,
+        metadataScanLimit: 2000,
+        metadataArrayLimit: 200,
         autoCloseTimer: null,
         interactionHandler: null,
         lastProgressState: null,
@@ -1873,8 +1875,15 @@
             const meta = {};
             const stack = [payload];
             const seen = new WeakSet();
+            const maxNodes = Number.isFinite(this.metadataScanLimit) && this.metadataScanLimit > 0
+                ? this.metadataScanLimit
+                : 2000;
+            const arrayLimit = Number.isFinite(this.metadataArrayLimit) && this.metadataArrayLimit > 0
+                ? this.metadataArrayLimit
+                : 200;
+            let processed = 0;
 
-            while (stack.length) {
+            while (stack.length && processed < maxNodes) {
                 const current = stack.pop();
                 if (!current || typeof current !== 'object')
                     continue;
@@ -1883,9 +1892,14 @@
                     continue;
 
                 seen.add(current);
+                processed += 1;
+
+                if (this.isMetadataComplete(meta))
+                    break;
 
                 if (Array.isArray(current)) {
-                    for (let index = 0; index < current.length; index += 1)
+                    const length = Math.min(current.length, arrayLimit);
+                    for (let index = 0; index < length; index += 1)
                         stack.push(current[index]);
                     continue;
                 }
@@ -1933,6 +1947,9 @@
                             meta.serial = serial;
                     }
 
+                    if (this.isMetadataComplete(meta))
+                        break;
+
                     if (value && typeof value === 'object')
                         stack.push(value);
                 }
@@ -1942,6 +1959,14 @@
                 return null;
 
             return meta;
+        },
+
+        isMetadataComplete(meta) {
+            if (!meta || typeof meta !== 'object')
+                return false;
+
+            const hasId = Boolean(meta.kinopoisk_id || meta.imdb_id);
+            return hasId && Boolean(meta.title) && Boolean(meta.year);
         },
 
         updateMetadata(meta) {
