@@ -23,6 +23,7 @@
         progressReady: false,
         originalOpen: null,
         originalSend: null,
+        originalFetch: null,
         folderClickHandler: null,
         legacyMode: false,
         sfilterItems: [],
@@ -61,6 +62,7 @@
             this.observeSourceList();
             this.ensureSFilterIntegration();
             this.hookXHR();
+            this.hookFetch();
             this.bindProviderFolders();
         },
 
@@ -1518,6 +1520,90 @@
             };
         },
 
+        hookFetch() {
+            if (!window || typeof window.fetch !== 'function' || this.originalFetch)
+                return;
+
+            this.originalFetch = window.fetch;
+
+            window.fetch = function (input, init) {
+                let request = input;
+                let url = '';
+                const hasRequest = typeof Request === 'function';
+
+                if (typeof input === 'string')
+                    url = input;
+                else if (input && typeof input === 'object')
+                    url = typeof input.url === 'string' ? input.url : (hasRequest && input instanceof Request ? input.url : '');
+
+                let preparedUrl = typeof url === 'string' && url ? SmartFilter.prepareRequestUrl(url) : url;
+
+                if (typeof input === 'string')
+                    request = preparedUrl;
+                else if (hasRequest && input instanceof Request && preparedUrl && preparedUrl !== url) {
+                    try {
+                        const requestInit = init ? Object.assign({}, init) : {};
+                        if (!requestInit.method)
+                            requestInit.method = input.method;
+                        if (!requestInit.headers)
+                            requestInit.headers = input.headers;
+                        if (!Object.prototype.hasOwnProperty.call(requestInit, 'credentials'))
+                            requestInit.credentials = input.credentials;
+                        if (!Object.prototype.hasOwnProperty.call(requestInit, 'cache'))
+                            requestInit.cache = input.cache;
+                        if (!Object.prototype.hasOwnProperty.call(requestInit, 'mode'))
+                            requestInit.mode = input.mode;
+                        if (!Object.prototype.hasOwnProperty.call(requestInit, 'redirect'))
+                            requestInit.redirect = input.redirect;
+                        if (!Object.prototype.hasOwnProperty.call(requestInit, 'referrer'))
+                            requestInit.referrer = input.referrer;
+                        if (!Object.prototype.hasOwnProperty.call(requestInit, 'integrity'))
+                            requestInit.integrity = input.integrity;
+                        if (!Object.prototype.hasOwnProperty.call(requestInit, 'keepalive'))
+                            requestInit.keepalive = input.keepalive;
+                        if (!Object.prototype.hasOwnProperty.call(requestInit, 'signal'))
+                            requestInit.signal = input.signal;
+                        request = new Request(preparedUrl, requestInit);
+                    } catch (err) {
+                        request = preparedUrl;
+                    }
+                } else if (preparedUrl && preparedUrl !== url) {
+                    request = preparedUrl;
+                }
+
+                const finalUrl = typeof preparedUrl === 'string' && preparedUrl ? preparedUrl : url;
+                const isTarget = SmartFilter.isSmartFilterRequest(finalUrl);
+
+                if (isTarget)
+                    SmartFilter.handleFetchStart(finalUrl);
+
+                const fetchPromise = SmartFilter.originalFetch.call(this, request, init);
+
+                return fetchPromise.then((response) => {
+                    if (!response)
+                        return response;
+
+                    const cloneForMetadata = typeof response.clone === 'function' ? response.clone() : null;
+                    const cloneForData = typeof response.clone === 'function' ? response.clone() : null;
+
+                    if (cloneForMetadata)
+                        SmartFilter.captureFetchMetadata(cloneForMetadata);
+
+                    if (isTarget && cloneForData)
+                        return SmartFilter.handleFetchComplete(finalUrl, cloneForData).then(() => response);
+
+                    if (isTarget)
+                        return SmartFilter.handleFetchComplete(finalUrl, null).then(() => response);
+
+                    return response;
+                }).catch((error) => {
+                    if (isTarget)
+                        SmartFilter.handleFetchError();
+                    throw error;
+                });
+            };
+        },
+
         isSmartFilterRequest(url) {
             return typeof url === 'string' && url.indexOf('/lite/smartfilter') !== -1;
         },
@@ -1560,6 +1646,69 @@
                 this.cachedItems = null;
                 this.notifySFilterModule([], { reset: true, ensureButton: true, container: document.querySelector('[data-smartfilter="true"]') });
             }
+        },
+
+        handleFetchStart(url) {
+            const info = this.parseRequestUrl(url);
+            this.progressHost = info.origin;
+            this.progressKey = info.progressKey;
+            this.cachedData = null;
+            this.cachedItems = null;
+            this.lastProgressState = null;
+            this.progressReady = false;
+            this.cancelAutoClose();
+            this.hideProgress(true);
+            this.notifySFilterModule([], { reset: true, ensureButton: true, container: document.querySelector('[data-smartfilter="true"]') });
+            this.startProgress();
+        },
+
+        handleFetchComplete(url, response) {
+            this.stopProgress();
+
+            if (!this.lastProgressState || !this.lastProgressState.ready)
+                this.hideProgress(true);
+
+            if (!response)
+                return Promise.resolve();
+
+            return response.text().then((text) => {
+                if (!text)
+                    return;
+
+                const trimmed = text.trim();
+                if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '['))
+                    return;
+
+                let data = null;
+                try {
+                    data = JSON.parse(trimmed);
+                } catch (err) {
+                    data = null;
+                }
+
+                if (!data)
+                    return;
+
+                const flattened = this.flattenItems(data);
+                this.cachedData = data;
+                this.cachedItems = flattened;
+                const container = document.querySelector('[data-smartfilter="true"]');
+                this.notifySFilterModule(flattened, { ensureButton: true, container, cachedData: data, cachedItems: flattened });
+            }).catch(() => {
+                this.cachedData = null;
+                this.cachedItems = null;
+                const container = document.querySelector('[data-smartfilter="true"]');
+                this.notifySFilterModule([], { reset: true, ensureButton: true, container });
+            });
+        },
+
+        handleFetchError() {
+            this.stopProgress();
+            this.hideProgress(true);
+            this.cachedData = null;
+            this.cachedItems = null;
+            const container = document.querySelector('[data-smartfilter="true"]');
+            this.notifySFilterModule([], { reset: true, ensureButton: true, container });
         },
 
         parseRequestUrl(url) {
@@ -1687,6 +1836,34 @@
             const meta = this.extractMetadata(payload);
             if (meta)
                 this.updateMetadata(meta);
+        },
+
+        captureFetchMetadata(response) {
+            if (!response || typeof response.text !== 'function')
+                return Promise.resolve();
+
+            return response.text().then((text) => {
+                if (!text)
+                    return;
+
+                const trimmed = text.trim();
+                if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '['))
+                    return;
+
+                let payload = null;
+                try {
+                    payload = JSON.parse(trimmed);
+                } catch (err) {
+                    payload = null;
+                }
+
+                if (!payload)
+                    return;
+
+                const meta = this.extractMetadata(payload);
+                if (meta)
+                    this.updateMetadata(meta);
+            }).catch(() => {});
         },
 
         extractMetadata(payload) {
