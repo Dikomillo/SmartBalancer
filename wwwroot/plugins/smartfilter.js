@@ -23,8 +23,12 @@
         modalBackHandler: null,
         previousController: null,
         folderClickHandler: null,
+        legacyMode: false,
 
         init() {
+            this.ensurePolyfills();
+            this.legacyMode = this.detectLegacyMode();
+
             if (!window.Lampa || !Lampa.Template || !document.body) {
                 this.scheduleInit();
                 return;
@@ -39,6 +43,234 @@
             this.ensureFilterButton();
             this.hookXHR();
             this.bindProviderFolders();
+        },
+
+        ensurePolyfills() {
+            if (typeof Array.from !== 'function')
+                Array.from = function (arrayLike) { return Array.prototype.slice.call(arrayLike); };
+
+            if (typeof Object.values !== 'function')
+                Object.values = function (obj) {
+                    if (obj === null || typeof obj !== 'object')
+                        return [];
+                    const result = [];
+                    for (const key in obj) {
+                        if (Object.prototype.hasOwnProperty.call(obj, key))
+                            result.push(obj[key]);
+                    }
+                    return result;
+                };
+
+            if (typeof Object.entries !== 'function')
+                Object.entries = function (obj) {
+                    if (obj === null || typeof obj !== 'object')
+                        return [];
+                    const result = [];
+                    for (const key in obj) {
+                        if (Object.prototype.hasOwnProperty.call(obj, key))
+                            result.push([key, obj[key]]);
+                    }
+                    return result;
+                };
+
+            if (!Array.prototype.includes)
+                Array.prototype.includes = function (searchElement) {
+                    const fromIndex = arguments.length > 1 ? Number(arguments[1]) || 0 : 0;
+                    for (let i = Math.max(fromIndex, 0); i < this.length; i += 1) {
+                        if (this[i] === searchElement)
+                            return true;
+                    }
+                    return false;
+                };
+
+            if (!String.prototype.includes)
+                String.prototype.includes = function (search, start) {
+                    return this.indexOf(search, start || 0) !== -1;
+                };
+
+            if (typeof Number.isFinite !== 'function')
+                Number.isFinite = function (value) { return typeof value === 'number' && isFinite(value); };
+
+            if (typeof Number.parseInt !== 'function')
+                Number.parseInt = parseInt;
+
+            if (typeof Number.parseFloat !== 'function')
+                Number.parseFloat = parseFloat;
+
+            if (typeof NodeList !== 'undefined' && !NodeList.prototype.forEach)
+                NodeList.prototype.forEach = Array.prototype.forEach;
+
+            if (typeof window.Map !== 'function') {
+                const SimpleMap = function () {
+                    this._keys = [];
+                    this._values = [];
+                };
+                SimpleMap.prototype.set = function (key, value) {
+                    const index = this._keys.indexOf(key);
+                    if (index === -1) {
+                        this._keys.push(key);
+                        this._values.push(value);
+                    } else {
+                        this._values[index] = value;
+                    }
+                };
+                SimpleMap.prototype.get = function (key) {
+                    const index = this._keys.indexOf(key);
+                    return index === -1 ? undefined : this._values[index];
+                };
+                SimpleMap.prototype.keys = function () {
+                    return this._keys.slice();
+                };
+                SimpleMap.prototype.clear = function () {
+                    this._keys.length = 0;
+                    this._values.length = 0;
+                };
+                window.Map = SimpleMap;
+            }
+
+            if (typeof window.Set !== 'function') {
+                const SimpleSet = function () { this._values = []; };
+                SimpleSet.prototype.add = function (value) {
+                    if (this._values.indexOf(value) === -1)
+                        this._values.push(value);
+                };
+                SimpleSet.prototype.has = function (value) {
+                    return this._values.indexOf(value) !== -1;
+                };
+                SimpleSet.prototype.forEach = function (callback, thisArg) {
+                    const values = this._values.slice();
+                    for (let i = 0; i < values.length; i += 1)
+                        callback.call(thisArg, values[i], values[i], this);
+                };
+                window.Set = SimpleSet;
+            }
+
+            if (typeof window.WeakSet !== 'function') {
+                const SimpleWeakSet = function () { this._values = []; };
+                SimpleWeakSet.prototype.add = function (value) {
+                    if (value && typeof value === 'object' && this._values.indexOf(value) === -1)
+                        this._values.push(value);
+                    return this;
+                };
+                SimpleWeakSet.prototype.has = function (value) {
+                    return this._values.indexOf(value) !== -1;
+                };
+                window.WeakSet = SimpleWeakSet;
+            }
+        },
+
+        detectLegacyMode() {
+            const testEl = document.createElement('div');
+            const lacksClassList = !('classList' in testEl);
+            const lacksFetch = typeof window.fetch !== 'function';
+            const lacksCssSupports = !window.CSS || typeof CSS.supports !== 'function';
+            const lacksPromise = typeof window.Promise !== 'function';
+            return lacksClassList || lacksFetch || lacksCssSupports || lacksPromise;
+        },
+
+        hasClass(element, className) {
+            if (!element || !className)
+                return false;
+
+            if (element.classList && typeof element.classList.contains === 'function')
+                return element.classList.contains(className);
+
+            const current = element.className || '';
+            return (` ${current} `).indexOf(` ${className} `) !== -1;
+        },
+
+        addClass(element, className) {
+            if (!element || !className)
+                return;
+
+            const classes = Array.isArray(className) ? className : [className];
+            classes.forEach((cls) => {
+                if (!cls)
+                    return;
+
+                if (element.classList && typeof element.classList.add === 'function')
+                    element.classList.add(cls);
+                else if (!this.hasClass(element, cls))
+                    element.className = `${element.className ? `${element.className} ` : ''}${cls}`;
+            });
+        },
+
+        removeClass(element, className) {
+            if (!element || !className)
+                return;
+
+            const classes = Array.isArray(className) ? className : [className];
+            classes.forEach((cls) => {
+                if (!cls)
+                    return;
+
+                if (element.classList && typeof element.classList.remove === 'function') {
+                    element.classList.remove(cls);
+                } else if (element.className) {
+                    element.className = element.className
+                        .split(' ')
+                        .filter((item) => item && item !== cls)
+                        .join(' ');
+                }
+            });
+        },
+
+        toggleClass(element, className, force) {
+            if (!element || !className)
+                return;
+
+            const shouldAdd = force === undefined ? !this.hasClass(element, className) : Boolean(force);
+            if (shouldAdd)
+                this.addClass(element, className);
+            else
+                this.removeClass(element, className);
+        },
+
+        requestJson(url, onSuccess, onError) {
+            if (!url)
+                return;
+
+            if (typeof fetch === 'function') {
+                fetch(url, { credentials: 'include' })
+                    .then((response) => (response && response.ok) ? response.json() : null)
+                    .then((data) => {
+                        if (typeof onSuccess === 'function' && data)
+                            onSuccess.call(this, data);
+                    })
+                    .catch((err) => {
+                        if (typeof onError === 'function')
+                            onError.call(this, err);
+                    });
+                return;
+            }
+
+            try {
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', url, true);
+                xhr.withCredentials = true;
+                const self = this;
+                xhr.onreadystatechange = function () {
+                    if (this.readyState !== 4)
+                        return;
+
+                    if (this.status >= 200 && this.status < 300) {
+                        try {
+                            const payload = JSON.parse(this.responseText || 'null');
+                            if (payload && typeof onSuccess === 'function')
+                                onSuccess.call(self, payload);
+                        } catch (error) {
+                            if (typeof onError === 'function')
+                                onError.call(self, error);
+                        }
+                    } else if (typeof onError === 'function') {
+                        onError.call(self, new Error('HTTP ' + this.status));
+                    }
+                };
+                xhr.send(null);
+            } catch (error) {
+                if (typeof onError === 'function')
+                    onError.call(this, error);
+            }
         },
 
         scheduleInit() {
@@ -81,6 +313,18 @@
                     animation: smartfilter-fade-in 0.35s ease forwards;
                 }
 
+                .smartfilter-progress--legacy {
+                    width: 94vw;
+                    max-width: 420px;
+                    padding: 18px 20px;
+                    background: rgba(17, 17, 17, 0.95);
+                    border: 1px solid rgba(255, 255, 255, 0.18);
+                    box-shadow: 0 18px 34px rgba(0, 0, 0, 0.6);
+                    backdrop-filter: none;
+                    animation: none;
+                    opacity: 1 !important;
+                }
+
                 .smartfilter-progress--closing {
                     animation: smartfilter-fade-out 0.25s ease forwards;
                 }
@@ -103,6 +347,11 @@
                     animation: smartfilter-spin 0.85s linear infinite;
                     position: relative;
                     box-shadow: 0 0 12px rgba(92, 224, 165, 0.35);
+                }
+
+                .smartfilter-progress--legacy .smartfilter-progress__loader,
+                .smartfilter-progress--legacy .smartfilter-progress__loader::before {
+                    animation: none !important;
                 }
 
                 .smartfilter-progress__loader--success {
@@ -164,6 +413,10 @@
                     background-size: 200% 100%;
                     transition: width 0.35s ease;
                     animation: smartfilter-progress-stripes 1.8s linear infinite;
+                }
+
+                .smartfilter-progress--legacy .smartfilter-progress__bar-inner {
+                    animation: none;
                 }
 
                 .smartfilter-progress--ready .smartfilter-progress__bar-inner {
@@ -315,6 +568,10 @@
                     text-align: center;
                     color: rgba(255, 255, 255, 0.5);
                     letter-spacing: 0.01em;
+                }
+
+                .smartfilter-progress--legacy .smartfilter-progress__hint {
+                    color: rgba(255, 255, 255, 0.75);
                 }
 
                 .smartfilter-progress--ready .smartfilter-progress__hint {
@@ -473,7 +730,7 @@
         decorateSource() {
             const items = document.querySelectorAll('.selectbox-item');
             items.forEach((item) => {
-                if (item.classList.contains('smartfilter-processed'))
+                if (this.hasClass(item, 'smartfilter-processed'))
                     return;
 
                 const title = item.querySelector('.selectbox-item__title');
@@ -483,7 +740,7 @@
                 if (title.textContent.toLowerCase().indexOf('smartfilter') === -1)
                     return;
 
-                item.classList.add('smartfilter-processed', 'smartfilter-source-highlight');
+                this.addClass(item, ['smartfilter-processed', 'smartfilter-source-highlight']);
                 const parent = item.parentElement;
                 if (parent)
                     parent.insertBefore(item, parent.firstChild);
@@ -527,7 +784,7 @@
                 if (typeof url === 'string')
                     finalUrl = SmartFilter.prepareRequestUrl(url);
 
-                const args = Array.from(arguments);
+                const args = Array.prototype.slice.call(arguments);
                 args[1] = finalUrl;
 
                 this.__smartfilter_url = typeof finalUrl === 'string' ? finalUrl : (finalUrl && finalUrl.toString()) || '';
@@ -746,12 +1003,15 @@
                 seen.add(current);
 
                 if (Array.isArray(current)) {
-                    for (const item of current)
-                        stack.push(item);
+                    for (let index = 0; index < current.length; index += 1)
+                        stack.push(current[index]);
                     continue;
                 }
 
-                for (const [key, value] of Object.entries(current)) {
+                const entries = Object.entries(current);
+                for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+                    const key = entries[entryIndex][0];
+                    const value = entries[entryIndex][1];
                     if (value === null || value === undefined)
                         continue;
 
@@ -767,20 +1027,20 @@
                             meta.imdb_id = imdb;
                     } else if (lower === 'title' || lower === 'name' || lower === 'ru_title') {
                         const textValue = this.normalizeText(value);
-                        if (textValue)
-                            meta.title ??= textValue;
+                        if (textValue && !meta.title)
+                            meta.title = textValue;
                     } else if (lower === 'original_title' || lower === 'originalname' || lower === 'original_name' || lower === 'orig_title') {
                         const original = this.normalizeText(value);
-                        if (original)
-                            meta.original_title ??= original;
+                        if (original && !meta.original_title)
+                            meta.original_title = original;
                     } else if (lower === 'year') {
                         const year = this.parsePositiveInt(value, 4);
-                        if (year)
-                            meta.year ??= year;
+                        if (year && !meta.year)
+                            meta.year = year;
                     } else if (lower === 'release_date' || lower === 'first_air_date' || lower === 'air_date' || lower === 'premiere_ru' || lower === 'premiere_world') {
                         const parsedYear = this.parseYearFromDate(value);
-                        if (parsedYear)
-                            meta.year ??= parsedYear;
+                        if (parsedYear && !meta.year)
+                            meta.year = parsedYear;
                     } else if (lower === 'is_serial' || lower === 'serial' || lower === 'season_count' || lower === 'seasons') {
                         const serial = this.parseSerialFlag(lower, value);
                         if (serial !== null)
@@ -914,17 +1174,14 @@
 
             const pull = () => {
                 const url = `${this.progressHost}/lite/smartfilter/progress?key=${encodeURIComponent(this.progressKey)}`;
-                fetch(url, { credentials: 'include' })
-                    .then((response) => response.ok ? response.json() : null)
-                    .then((data) => {
-                        if (!data)
-                            return;
+                this.requestJson(url, (data) => {
+                    if (!data)
+                        return;
 
-                        this.renderProgress(data);
-                        if (data.ready)
-                            this.stopProgress();
-                    })
-                    .catch(() => { });
+                    this.renderProgress(data);
+                    if (data.ready)
+                        this.stopProgress();
+                }, () => { });
             };
 
             pull();
@@ -951,7 +1208,11 @@
                 document.body.appendChild(container);
             }
 
-            container.classList.remove('smartfilter-progress--closing');
+            this.removeClass(container, 'smartfilter-progress--closing');
+            if (this.legacyMode)
+                this.addClass(container, 'smartfilter-progress--legacy');
+            else
+                this.removeClass(container, 'smartfilter-progress--legacy');
 
             const total = data.total || data.Total || 0;
             const completed = data.completed || data.Completed || 0;
@@ -966,8 +1227,10 @@
             const providerRows = providers.map((provider) => {
                 const status = provider.status || provider.Status || 'pending';
                 const name = provider.name || provider.Name || 'Провайдер';
-                const itemsCount = provider.items ?? provider.Items ?? 0;
-                const responseTime = provider.responseTime ?? provider.ResponseTime ?? 0;
+                const itemsCount = provider.items != null ? provider.items : (provider.Items != null ? provider.Items : 0);
+                const responseTime = provider.responseTime != null
+                    ? provider.responseTime
+                    : (provider.ResponseTime != null ? provider.ResponseTime : 0);
                 const error = provider.error || provider.Error || '';
                 const info = this.describeStatus(status, itemsCount, error, responseTime);
                 const statusClass = `smartfilter-progress__provider-status--${info.className}`;
@@ -1020,7 +1283,15 @@
                 <div class="smartfilter-progress__hint">${this.escapeHtml(hint)}</div>
             `;
 
-            container.classList.toggle('smartfilter-progress--ready', ready);
+            if (this.legacyMode) {
+                container.style.opacity = '1';
+                container.style.display = 'block';
+                container.style.transform = 'translate(-50%, -50%)';
+                if (window.jQuery)
+                    window.jQuery(container).stop(true, true).fadeIn(120);
+            }
+
+            this.toggleClass(container, 'smartfilter-progress--ready', ready);
 
             if (ready) {
                 this.progressReady = true;
@@ -1091,11 +1362,18 @@
             if (immediate) {
                 container.remove();
             } else {
-                container.classList.add('smartfilter-progress--closing');
-                setTimeout(() => {
-                    if (container.parentElement)
-                        container.remove();
-                }, 250);
+                if (this.legacyMode && window.jQuery) {
+                    window.jQuery(container).stop(true, true).fadeOut(160, () => {
+                        if (container.parentElement)
+                            container.remove();
+                    });
+                } else {
+                    this.addClass(container, 'smartfilter-progress--closing');
+                    setTimeout(() => {
+                        if (container.parentElement)
+                            container.remove();
+                    }, 250);
+                }
             }
         },
 
@@ -1170,9 +1448,9 @@
                 return;
 
             if (enabled) {
-                button.classList.add('enabled');
+                this.addClass(button, 'enabled');
             } else {
-                button.classList.remove('enabled');
+                this.removeClass(button, 'enabled');
             }
         },
 
@@ -1210,7 +1488,7 @@
                 const container = target.closest ? target.closest('[data-smartfilter="true"]') : null;
                 const expand = target.dataset.expanded !== 'true';
                 target.dataset.expanded = expand ? 'true' : 'false';
-                target.classList.toggle('smartfilter-expanded', expand);
+                this.toggleClass(target, 'smartfilter-expanded', expand);
 
                 const scope = container || document;
                 this.syncProviderVisibility(provider, scope);
@@ -1337,7 +1615,7 @@
 
             modal.querySelector('#smartfilter-modal-close').addEventListener('click', closeModal);
             modal.querySelector('#smartfilter-reset').addEventListener('click', () => {
-                modal.querySelectorAll('.smartfilter-chip').forEach((chip) => chip.classList.remove('active'));
+                modal.querySelectorAll('.smartfilter-chip').forEach((chip) => this.removeClass(chip, 'active'));
             });
             modal.querySelector('#smartfilter-apply').addEventListener('click', () => {
                 const selectedVoices = Array.from(modal.querySelectorAll('.smartfilter-chip[data-type="voice"].active')).map((chip) => chip.dataset.value);
@@ -1347,7 +1625,7 @@
             });
 
             modal.querySelectorAll('.smartfilter-chip').forEach((chip) => {
-                chip.addEventListener('click', () => chip.classList.toggle('active'));
+                chip.addEventListener('click', () => this.toggleClass(chip, 'active'));
             });
 
             document.body.appendChild(modal);
