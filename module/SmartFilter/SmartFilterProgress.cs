@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Caching.Memory;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -62,7 +63,26 @@ namespace SmartFilter
             });
         }
 
-        public static void PublishFinal(IMemoryCache cache, string progressKey, IEnumerable<ProviderStatus> statuses)
+        public static void UpdatePartial(IMemoryCache cache, string progressKey, JArray partial, AggregationMetadata metadata, bool ready)
+        {
+            if (cache == null || string.IsNullOrEmpty(progressKey))
+                return;
+
+            if (!cache.TryGetValue(progressKey, out ProgressState state))
+                return;
+
+            lock (state.SyncRoot)
+            {
+                state.Partial = partial != null ? (JArray)partial.DeepClone() : null;
+                state.Metadata = metadata?.Clone();
+                if (ready)
+                    state.Ready = true;
+
+                cache.Set(progressKey, state, ProgressTtl);
+            }
+        }
+
+        public static void PublishFinal(IMemoryCache cache, string progressKey, IEnumerable<ProviderStatus> statuses, JArray finalPayload = null, AggregationMetadata metadata = null)
         {
             if (cache == null || string.IsNullOrEmpty(progressKey))
                 return;
@@ -82,7 +102,7 @@ namespace SmartFilter
                         status.Status = status.HasContent ? "completed" : (string.IsNullOrEmpty(status.Error) ? "empty" : "error");
                 }
 
-                state.Replace(list, ready: true);
+                state.Replace(list, ready: true, finalPayload, metadata);
                 cache.Set(progressKey, state, ProgressTtl);
             }
         }
@@ -137,12 +157,18 @@ namespace SmartFilter
 
             public List<ProviderStatus> Providers { get; private set; }
             public bool Ready { get; private set; }
+            public AggregationMetadata Metadata { get; set; }
+            public JArray Partial { get; set; }
             public object SyncRoot { get; } = new object();
 
-            public void Replace(List<ProviderStatus> providers, bool ready)
+            public void Replace(List<ProviderStatus> providers, bool ready, JArray partial, AggregationMetadata metadata)
             {
                 Providers = providers ?? new List<ProviderStatus>();
                 Ready = ready;
+                if (partial != null)
+                    Partial = (JArray)partial.DeepClone();
+                if (metadata != null)
+                    Metadata = metadata.Clone();
             }
 
             public ProgressSnapshot ToSnapshot()
@@ -154,7 +180,9 @@ namespace SmartFilter
                     Total = Providers.Count,
                     Completed = completed,
                     Items = Providers.Sum(p => Math.Max(0, p.Items)),
-                    Providers = Providers.Select(p => p.Clone()).ToList()
+                    Providers = Providers.Select(p => p.Clone()).ToList(),
+                    Metadata = Metadata?.Clone(),
+                    Partial = Partial != null ? (JArray)Partial.DeepClone() : null
                 };
             }
         }

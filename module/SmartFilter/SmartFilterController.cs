@@ -8,6 +8,7 @@ using Shared.Models;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace SmartFilter
 {
@@ -74,72 +75,39 @@ namespace SmartFilter
                 int requestedSeason = TryParseInt(HttpContext.Request.Query["s"]);
 
                 var engine = new SmartFilterEngine(memoryCache, host, HttpContext);
-                var aggregation = await InvokeCache(cacheKey,
+                var aggregationTask = InvokeCache(cacheKey,
                     TimeSpan.FromMinutes(Math.Max(1, ModInit.conf.cacheTimeMinutes)),
                     () => engine.AggregateProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language, provider, requestedSeason, progressKey));
 
-                aggregation ??= new AggregationResult
+                AggregationResult aggregation = null;
+                if (aggregationTask.IsCompleted)
                 {
-                    Type = ResolveAggregationType(serial, provider, requestedSeason),
-                    ProgressKey = progressKey
-                };
-                aggregation.ProgressKey ??= progressKey;
-
-                SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
-
-                if (IsEmpty(aggregation.Data))
-                    return OnError("Контент не найден");
-
-                var providerStatus = aggregation.Providers
-                    .Select(p => new
-                    {
-                        name = p.Name,
-                        plugin = p.Plugin,
-                        status = p.Status,
-                        items = p.Items,
-                        responseTime = p.ResponseTime,
-                        error = p.Error
-                    })
-                    .ToList();
+                    aggregation = await SafeAwait(aggregationTask);
+                }
 
                 if (rjson)
                 {
-                    bool isSeries = string.Equals(aggregation.Type, "season", StringComparison.OrdinalIgnoreCase) || string.Equals(aggregation.Type, "episode", StringComparison.OrdinalIgnoreCase);
-                    var responseObject = new JObject
+                    if (aggregation == null)
                     {
-                        ["type"] = aggregation.Type,
-                        ["providers"] = JArray.FromObject(providerStatus),
-                        ["progressKey"] = progressKey
-                    };
-
-                    if (isSeries)
-                    {
-                        var (seriesData, voiceData, quality) = SeriesDataHelper.Unpack(aggregation.Data);
-                        responseObject["data"] = seriesData.DeepClone();
-                        responseObject["results"] = seriesData.DeepClone();
-
-                        if (voiceData != null)
-                            responseObject["voice"] = voiceData.DeepClone();
-
-                        if (!string.IsNullOrWhiteSpace(quality))
-                            responseObject["maxquality"] = quality;
-                    }
-                    else
-                    {
-                        responseObject["data"] = aggregation.Data ?? new JArray();
-                        responseObject["results"] = aggregation.Data ?? new JArray();
+                        var snapshot = SmartFilterProgress.Snapshot(memoryCache, progressKey) ?? new ProgressSnapshot();
+                        var response = BuildProgressResponse(snapshot, progressKey, ResolveAggregationType(serial, provider, requestedSeason));
+                        return Content(response.ToString(Formatting.None), "application/json; charset=utf-8");
                     }
 
+                    var responseObject = BuildAggregationResponse(aggregation, progressKey);
                     return Content(responseObject.ToString(Formatting.None), "application/json; charset=utf-8");
                 }
-                else
-                {
-                    var html = aggregation.Html ?? ResponseRenderer.BuildHtml(aggregation.Type, aggregation.Data, title, original_title);
-                    if (string.IsNullOrEmpty(html))
-                        return OnError("Контент не найден");
 
-                    return Content(html, "text/html; charset=utf-8");
-                }
+                aggregation ??= await aggregationTask;
+
+                if (aggregation == null || IsEmpty(aggregation.Data))
+                    return OnError("Контент не найден");
+
+                var html = BuildHtmlFromAggregation(aggregation, title, original_title);
+                if (string.IsNullOrEmpty(html))
+                    return OnError("Контент не найден");
+
+                return Content(html, "text/html; charset=utf-8");
             }
             catch (Exception ex)
             {
@@ -201,6 +169,121 @@ namespace SmartFilter
             }
 
             return !token.HasValues;
+        }
+
+        private async Task<AggregationResult> SafeAwait(Task<AggregationResult> task)
+        {
+            try
+            {
+                return await task;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private JObject BuildProgressResponse(ProgressSnapshot snapshot, string progressKey, string fallbackType)
+        {
+            snapshot ??= new ProgressSnapshot();
+
+            var providers = snapshot.Providers?.Select(p => new
+            {
+                name = p.Name,
+                plugin = p.Plugin,
+                status = p.Status,
+                items = p.Items,
+                responseTime = p.ResponseTime,
+                error = p.Error
+            }) ?? Enumerable.Empty<object>();
+
+            var response = new JObject
+            {
+                ["status"] = snapshot.Ready ? "done" : "pending",
+                ["progress"] = snapshot.ProgressPercentage,
+                ["ready"] = snapshot.Ready,
+                ["total"] = snapshot.Total,
+                ["completed"] = snapshot.Completed,
+                ["items"] = snapshot.Items,
+                ["providers"] = JArray.FromObject(providers),
+                ["progressKey"] = progressKey,
+                ["type"] = fallbackType
+            };
+
+            if (snapshot.Partial != null)
+                response["results"] = snapshot.Partial.DeepClone();
+            else
+                response["results"] = new JArray();
+
+            if (snapshot.Metadata != null)
+                response["metadata"] = JObject.FromObject(snapshot.Metadata);
+
+            return response;
+        }
+
+        private JObject BuildAggregationResponse(AggregationResult aggregation, string progressKey)
+        {
+            var providers = aggregation.Providers?.Select(p => new
+            {
+                name = p.Name,
+                plugin = p.Plugin,
+                status = p.Status,
+                items = p.Items,
+                responseTime = p.ResponseTime,
+                error = p.Error
+            }) ?? Enumerable.Empty<object>();
+
+            var responseObject = new JObject
+            {
+                ["status"] = "done",
+                ["type"] = aggregation.Type,
+                ["providers"] = JArray.FromObject(providers),
+                ["results"] = aggregation.Data?.DeepClone() ?? new JArray(),
+                ["progressKey"] = progressKey
+            };
+
+            if (aggregation.Metadata != null)
+                responseObject["metadata"] = JObject.FromObject(aggregation.Metadata);
+
+            return responseObject;
+        }
+
+        private string BuildHtmlFromAggregation(AggregationResult aggregation, string title, string originalTitle)
+        {
+            if (aggregation?.Data == null)
+                return null;
+
+            var items = aggregation.Data as JArray ?? new JArray();
+            if (items.Count == 0)
+                return null;
+
+            var builder = new System.Text.StringBuilder();
+            builder.Append("<div class='smartfilter-list'>");
+            builder.Append($"<h2 style='padding:10px 15px'>{System.Net.WebUtility.HtmlEncode(title ?? originalTitle ?? "SmartFilter")}</h2>");
+            builder.Append("<ul style='list-style:none;margin:0;padding:0'>");
+
+            foreach (var item in items.OfType<JObject>())
+            {
+                string name = item.Value<string>("title") ?? "Элемент";
+                string quality = item.Value<string>("quality_label") ?? string.Empty;
+                string voice = item.Value<string>("voice_label") ?? string.Empty;
+                string url = item.Value<string>("url") ?? string.Empty;
+
+                builder.Append("<li style='padding:10px 15px;border-bottom:1px solid rgba(255,255,255,0.1)'>");
+                builder.Append($"<div style='font-weight:600'>{System.Net.WebUtility.HtmlEncode(name)}</div>");
+                builder.Append("<div style='font-size:12px;opacity:0.75'>");
+                if (!string.IsNullOrEmpty(quality))
+                    builder.Append($"<span>Качество: {System.Net.WebUtility.HtmlEncode(quality)}</span> ");
+                if (!string.IsNullOrEmpty(voice))
+                    builder.Append($"<span>Озвучка: {System.Net.WebUtility.HtmlEncode(voice)}</span> ");
+                builder.Append("</div>");
+                if (!string.IsNullOrEmpty(url))
+                    builder.Append($"<div style='margin-top:6px;word-break:break-all'><a href='{System.Net.WebUtility.HtmlEncode(url)}' target='_blank'>Перейти</a></div>");
+                builder.Append("</li>");
+            }
+
+            builder.Append("</ul></div>");
+            return builder.ToString();
         }
 
         private static string ResolveContentType(int serial, string provider)

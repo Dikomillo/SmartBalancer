@@ -1,5 +1,6 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using System;
 using System.Collections.Generic;
 
 namespace SmartFilter
@@ -42,6 +43,35 @@ namespace SmartFilter
         public string Html { get; set; }
         public List<ProviderStatus> Providers { get; set; } = new List<ProviderStatus>();
         public string ProgressKey { get; set; }
+        public AggregationMetadata Metadata { get; set; }
+    }
+
+    public class AggregationMetadata
+    {
+        public Dictionary<string, AggregationFacet> Qualities { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, AggregationFacet> Voices { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public int TotalItems { get; set; }
+
+        public AggregationMetadata Clone()
+        {
+            return new AggregationMetadata
+            {
+                TotalItems = TotalItems,
+                Qualities = Qualities?.ToDictionary(k => k.Key, v => v.Value.Clone(), StringComparer.OrdinalIgnoreCase)
+                    ?? new Dictionary<string, AggregationFacet>(StringComparer.OrdinalIgnoreCase),
+                Voices = Voices?.ToDictionary(k => k.Key, v => v.Value.Clone(), StringComparer.OrdinalIgnoreCase)
+                    ?? new Dictionary<string, AggregationFacet>(StringComparer.OrdinalIgnoreCase)
+            };
+        }
+    }
+
+    public class AggregationFacet
+    {
+        public string Code { get; set; }
+        public string Label { get; set; }
+        public int Count { get; set; }
+
+        public AggregationFacet Clone() => new AggregationFacet { Code = Code, Label = Label, Count = Count };
     }
 
     public class ProgressSnapshot
@@ -51,6 +81,8 @@ namespace SmartFilter
         public int Completed { get; set; }
         public int Items { get; set; }
         public List<ProviderStatus> Providers { get; set; } = new List<ProviderStatus>();
+        public AggregationMetadata Metadata { get; set; }
+        public JArray Partial { get; set; }
 
         [JsonProperty("progress")]
         public int ProgressPercentage => Total == 0 ? 0 : (int)System.Math.Round((double)Completed * 100 / Total);
