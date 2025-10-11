@@ -1,0 +1,34 @@
+{
+  "quality": {
+    "2160": { "code": "2160p", "label": "2160p" },
+    "2160p": { "code": "2160p", "label": "2160p" },
+    "1440p": { "code": "1440p", "label": "1440p" },
+    "1080": { "code": "1080p", "label": "1080p" },
+    "1080p": { "code": "1080p", "label": "1080p" },
+    "FullHD": { "code": "1080p", "label": "1080p" },
+    "FHD": { "code": "1080p", "label": "1080p" },
+    "720": { "code": "720p", "label": "720p" },
+    "720p": { "code": "720p", "label": "720p" },
+    "HD": { "code": "720p", "label": "720p" },
+    "480p": { "code": "480p", "label": "480p" },
+    "SD": { "code": "480p", "label": "480p" },
+    "360p": { "code": "360p", "label": "360p" },
+    "CamRip": { "code": "camrip", "label": "CamRip" },
+    "CAM": { "code": "camrip", "label": "CamRip" }
+  },
+  "voice": {
+    "Jaskier": { "code": "jaskier", "label": "Jaskier" },
+    "Jasker": { "code": "jaskier", "label": "Jaskier" },
+    "Jask": { "code": "jaskier", "label": "Jaskier" },
+    "ColdFilm": { "code": "coldfilm", "label": "ColdFilm" },
+    "Cold Film": { "code": "coldfilm", "label": "ColdFilm" },
+    "LostFilm": { "code": "lostfilm", "label": "LostFilm" },
+    "Lost Film": { "code": "lostfilm", "label": "LostFilm" },
+    "Original": { "code": "original", "label": "Оригинал" },
+    "eng": { "code": "original", "label": "Оригинал" },
+    "uk": { "code": "uk", "label": "Украинский" },
+    "ua": { "code": "uk", "label": "Украинский" },
+    "рус": { "code": "ru", "label": "Русский" },
+    "ru": { "code": "ru", "label": "Русский" }
+  }
+}

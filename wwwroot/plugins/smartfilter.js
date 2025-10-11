@@ -15,6 +15,7 @@
         legacyObserverInterval: null,
         cachedData: null,
         cachedItems: null,
+        cachedMetadata: null,
         seriesState: null,
         metadata: null,
         metadataTtl: 5 * 60 * 1000,
@@ -705,20 +706,29 @@
                 .smartfilter-chip {
                     display: inline-flex;
                     align-items: center;
-                    padding: 6px 10px;
-                    border-radius: 20px;
-                    background: rgba(255, 255, 255, 0.08);
+                    padding: 6px 12px;
                     margin: 4px;
+                    border-radius: 20px;
+                    border: 0;
+                    background: rgba(255, 255, 255, 0.08);
+                    color: inherit;
+                    font: inherit;
                     cursor: pointer;
-                    transition: background 0.2s ease;
+                    transition: background 0.2s ease, transform 0.15s ease;
+                }
+
+                .smartfilter-chip:focus {
+                    outline: none;
+                }
+
+                .smartfilter-chip:focus-visible {
+                    outline: 2px solid rgba(76, 175, 80, 0.65);
+                    outline-offset: 2px;
                 }
 
                 .smartfilter-chip.active {
                     background: #4CAF50;
-                }
-
-                .smartfilter-chip input {
-                    margin-right: 6px;
+                    transform: translateY(-1px);
                 }
 
                 .smartfilter-source-highlight {
@@ -779,7 +789,7 @@
 
                 const container = document.querySelector('[data-smartfilter="true"]');
                 if (container || (this.cachedItems && this.cachedItems.length))
-                    this.notifySFilterModule(this.cachedItems || [], { ensureButton: true, container });
+                    this.notifySFilterModule(this.cachedItems || [], { ensureButton: true, container, metadata: this.cachedMetadata });
             };
 
             if (typeof MutationObserver === 'function') {
@@ -993,7 +1003,8 @@
                     container,
                     cachedData: data,
                     cachedItems: items,
-                    series: dataset
+                    series: dataset,
+                    metadata: data && data.metadata ? data.metadata : this.cachedMetadata
                 });
 
                 return items;
@@ -1091,6 +1102,11 @@
             if (Array.isArray(options.cachedItems))
                 this.cachedItems = options.cachedItems.slice();
 
+            if (options.metadata && typeof options.metadata === 'object')
+                this.cachedMetadata = options.metadata;
+            else if (options.reset)
+                this.cachedMetadata = null;
+
             if (options.series === null)
                 this.seriesState = null;
             else if (options.series && typeof options.series === 'object')
@@ -1135,6 +1151,12 @@
         },
 
         collectSFilterOptions() {
+            if (this.cachedMetadata && typeof this.cachedMetadata === 'object') {
+                const metaOptions = this.extractOptionsFromMetadata(this.cachedMetadata);
+                if (metaOptions)
+                    return metaOptions;
+            }
+
             if (this.seriesState && typeof this.seriesState === 'object') {
                 const seriesVoices = Array.isArray(this.seriesState.voices) ? this.seriesState.voices.slice() : [];
                 const seriesQualities = Array.isArray(this.seriesState.qualities) ? this.seriesState.qualities.slice() : [];
@@ -1143,153 +1165,106 @@
                     return { voices: seriesVoices, qualities: seriesQualities };
             }
 
-            const voices = [];
-            const voiceSeen = Object.create(null);
-            const qualities = [];
-            const qualitySeen = Object.create(null);
-            const visitedVoices = typeof WeakSet === 'function' ? new WeakSet() : null;
-            const visitedQualities = typeof WeakSet === 'function' ? new WeakSet() : null;
+            const options = this.extractOptionsFromMetadata({
+                voices: this.buildFacetMapFromItems(this.sfilterItems, 'voice'),
+                qualities: this.buildFacetMapFromItems(this.sfilterItems, 'quality')
+            });
 
-            const addVoice = (value) => {
-                const label = this.normalizeVoiceLabel(value);
-                const normalized = this.normalizeFilterText(label);
-                if (!normalized || voiceSeen[normalized])
-                    return;
+            return options || { voices: [], qualities: [] };
+        },
 
-                voiceSeen[normalized] = true;
-                voices.push(label);
-            };
+        extractOptionsFromMetadata(metadata) {
+            if (!metadata || typeof metadata !== 'object')
+                return null;
 
-            const addQuality = (value) => {
-                if (value === null || value === undefined)
-                    return;
+            const voices = this.buildFacetArray(metadata.voices || metadata.Voices, 'voice');
+            const qualities = this.buildFacetArray(metadata.qualities || metadata.Qualities, 'quality');
 
-                const label = String(value).trim();
-                const normalized = this.normalizeFilterText(label);
-                if (!normalized || qualitySeen[normalized])
-                    return;
-
-                qualitySeen[normalized] = true;
-                qualities.push(label);
-            };
-
-            const addVoiceCandidate = (value) => {
-                if (value === null || value === undefined)
-                    return;
-
-                if (Array.isArray(value)) {
-                    value.forEach(addVoiceCandidate);
-                    return;
-                }
-
-                if (typeof value === 'object') {
-                    if (visitedVoices && visitedVoices.has(value))
-                        return;
-
-                    if (visitedVoices)
-                        visitedVoices.add(value);
-
-                    addVoiceCandidate(value.translate || value.voice || value.voice_name || value.voiceName || value.name || value.title || value.label);
-                    if (Array.isArray(value.list))
-                        value.list.forEach(addVoiceCandidate);
-                    if (Array.isArray(value.items))
-                        value.items.forEach(addVoiceCandidate);
-                    return;
-                }
-
-                addVoice(value);
-            };
-
-            const addQualityCandidate = (value) => {
-                if (value === null || value === undefined)
-                    return;
-
-                if (Array.isArray(value)) {
-                    value.forEach(addQualityCandidate);
-                    return;
-                }
-
-                if (typeof value === 'object') {
-                    if (visitedQualities && visitedQualities.has(value))
-                        return;
-
-                    if (visitedQualities)
-                        visitedQualities.add(value);
-
-                    addQualityCandidate(value.maxquality || value.quality || value.quality_name || value.qualityName || value.label);
-                    return;
-                }
-
-                addQuality(value);
-            };
-
-            const collectFromItem = (item) => {
-                if (!item || typeof item !== 'object') {
-                    addVoiceCandidate(item);
-                    addQualityCandidate(item);
-                    return;
-                }
-
-                if ((visitedVoices && visitedVoices.has(item)) && (visitedQualities && visitedQualities.has(item)))
-                    return;
-
-                if (visitedVoices && !visitedVoices.has(item))
-                    visitedVoices.add(item);
-                if (visitedQualities && !visitedQualities.has(item))
-                    visitedQualities.add(item);
-
-                addVoiceCandidate(item.translate);
-                addVoiceCandidate(item.voice);
-                addVoiceCandidate(item.voice_name);
-                addVoiceCandidate(item.voiceName);
-                addVoiceCandidate(item.voice_list);
-                addVoiceCandidate(item.translation);
-                addVoiceCandidate(item.author);
-                addVoiceCandidate(item.dub);
-
-                addQualityCandidate(item.maxquality);
-                addQualityCandidate(item.maxQuality);
-                addQualityCandidate(item.quality);
-                addQualityCandidate(item.quality_label);
-                addQualityCandidate(item.qualityName);
-                addQualityCandidate(item.video_quality);
-                addQualityCandidate(item.source_quality);
-                addQualityCandidate(item.hd);
-
-                const nestedKeys = ['items', 'results', 'playlist', 'list', 'translations', 'children'];
-                nestedKeys.forEach((key) => {
-                    const nested = item[key];
-                    if (Array.isArray(nested))
-                        nested.forEach(collectFromItem);
-                    else if (nested && typeof nested === 'object')
-                        collectFromItem(nested);
-                });
-            };
-
-            (this.sfilterItems || []).forEach(collectFromItem);
-            (this.cachedItems || []).forEach(collectFromItem);
-
-            const cached = this.cachedData;
-            if (cached && typeof cached === 'object') {
-                addVoiceCandidate(cached.voice || cached.voices);
-                addVoiceCandidate(cached.translations);
-                addQualityCandidate(cached.maxquality);
-                addQualityCandidate(cached.quality);
-
-                const pools = ['data', 'results', 'items', 'playlist', 'list'];
-                pools.forEach((key) => {
-                    const value = cached[key];
-                    if (Array.isArray(value))
-                        value.forEach(collectFromItem);
-                });
-
-                if (cached.options && typeof cached.options === 'object') {
-                    addVoiceCandidate(cached.options.voices);
-                    addQualityCandidate(cached.options.qualities);
-                }
-            }
+            if (!voices.length && !qualities.length)
+                return null;
 
             return { voices, qualities };
+        },
+
+        buildFacetMapFromItems(items, kind) {
+            const map = {};
+            const source = Array.isArray(items) ? items : [];
+            source.forEach((item) => {
+                if (!item || typeof item !== 'object')
+                    return;
+
+                if (kind === 'voice') {
+                    const label = this.normalizeVoiceLabel(item.voice_label || item.voice || item.translation || item.details);
+                    if (!label)
+                        return;
+                    const key = this.normalizeFilterText(label) || label;
+                    const entry = map[key] || { label, count: 0 };
+                    entry.count += 1;
+                    map[key] = entry;
+                } else if (kind === 'quality') {
+                    const label = this.normalizeQualityLabel(item.quality_label || item.quality || item.maxquality);
+                    if (!label)
+                        return;
+                    const key = this.normalizeFilterText(label) || label;
+                    const entry = map[key] || { label, count: 0 };
+                    entry.count += 1;
+                    map[key] = entry;
+                }
+            });
+            return map;
+        },
+
+        buildFacetArray(map, type) {
+            if (!map || typeof map !== 'object')
+                return [];
+
+            const entries = [];
+            Object.keys(map).forEach((key) => {
+                const facet = map[key];
+                if (!facet || typeof facet !== 'object')
+                    return;
+
+                const label = this.normalizeText(facet.label || facet.Label);
+                if (!label)
+                    return;
+
+                const code = this.normalizeText(facet.code || facet.Code);
+                const countRaw = facet.count != null ? facet.count : facet.Count;
+                const count = Number.isFinite(countRaw) ? Number(countRaw) : Number.parseInt(countRaw, 10);
+                entries.push({ code, label, count: Number.isFinite(count) ? count : 0 });
+            });
+
+            if (!entries.length)
+                return [];
+
+            if (type === 'quality')
+                entries.sort((a, b) => this.scoreQualityFacet(b.code || b.label) - this.scoreQualityFacet(a.code || a.label));
+            else
+                entries.sort((a, b) => a.label.localeCompare(b.label));
+
+            return entries.map((entry) => entry.count > 0 ? `${entry.label} (${entry.count})` : entry.label);
+        },
+
+        scoreQualityFacet(value) {
+            if (!value)
+                return -1;
+
+            const normalized = value.toString().toLowerCase();
+            if (normalized.includes('2160'))
+                return 6;
+            if (normalized.includes('1440'))
+                return 5;
+            if (normalized.includes('1080'))
+                return 4;
+            if (normalized.includes('720'))
+                return 3;
+            if (normalized.includes('480'))
+                return 2;
+            if (normalized.includes('360'))
+                return 1;
+            if (normalized.includes('cam'))
+                return 0;
+            return 0;
         },
 
         normalizeFilterText(value) {
@@ -1703,10 +1678,7 @@
 
         createSFilterChip(type, value) {
             const safeValue = value !== null && value !== undefined ? String(value) : '';
-            return `<label class="smartfilter-chip" data-type="${type}" data-value="${this.escapeHtml(safeValue)}">
-                <input type="checkbox" />
-                <span>${this.escapeHtml(safeValue)}</span>
-            </label>`;
+            return `<button type="button" class="smartfilter-chip" data-type="${type}" data-value="${this.escapeHtml(safeValue)}">${this.escapeHtml(safeValue)}</button>`;
         },
 
         hookXHR() {
@@ -1861,6 +1833,7 @@
             this.progressKey = info.progressKey;
             this.cachedData = null;
             this.cachedItems = null;
+            this.cachedMetadata = null;
             this.lastProgressState = null;
             this.progressReady = false;
             this.cancelAutoClose();
@@ -1883,14 +1856,16 @@
                 if (!data)
                     return;
 
-                const flattened = this.flattenItems(data);
+                const flattened = this.flattenItems(data.results || data);
                 this.cachedData = data;
                 this.cachedItems = flattened;
+                this.cachedMetadata = data.metadata || null;
                 const container = document.querySelector('[data-smartfilter="true"]');
-                this.notifySFilterModule(flattened, { ensureButton: true, container });
+                this.notifySFilterModule(flattened, { ensureButton: true, container, metadata: this.cachedMetadata });
             } catch (err) {
                 this.cachedData = null;
                 this.cachedItems = null;
+                this.cachedMetadata = null;
                 this.notifySFilterModule([], { reset: true, ensureButton: true, container: document.querySelector('[data-smartfilter="true"]') });
             }
         },
@@ -1939,14 +1914,16 @@
                 if (!data)
                     return;
 
-                const flattened = this.flattenItems(data);
+                const flattened = this.flattenItems(data.results || data);
                 this.cachedData = data;
                 this.cachedItems = flattened;
+                this.cachedMetadata = data.metadata || null;
                 const container = document.querySelector('[data-smartfilter="true"]');
-                this.notifySFilterModule(flattened, { ensureButton: true, container, cachedData: data, cachedItems: flattened });
+                this.notifySFilterModule(flattened, { ensureButton: true, container, cachedData: data, cachedItems: flattened, metadata: this.cachedMetadata });
             }).catch(() => {
                 this.cachedData = null;
                 this.cachedItems = null;
+                this.cachedMetadata = null;
                 const container = document.querySelector('[data-smartfilter="true"]');
                 this.notifySFilterModule([], { reset: true, ensureButton: true, container });
             });
@@ -1957,6 +1934,7 @@
             this.hideProgress(true);
             this.cachedData = null;
             this.cachedItems = null;
+            this.cachedMetadata = null;
             const container = document.querySelector('[data-smartfilter="true"]');
             this.notifySFilterModule([], { reset: true, ensureButton: true, container });
         },

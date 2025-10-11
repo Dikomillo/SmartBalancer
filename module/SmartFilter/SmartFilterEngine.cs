@@ -13,6 +13,7 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Text.RegularExpressions;
+using System.Globalization;
 
 namespace SmartFilter
 {
@@ -75,6 +76,7 @@ namespace SmartFilter
             public string Name { get; set; }
             public string Link { get; init; }
             public string Provider { get; init; }
+            public string Quality { get; init; }
         }
 
         private sealed class VoiceEntry
@@ -98,6 +100,56 @@ namespace SmartFilter
             public JObject Headers { get; init; }
             public int? HlsManifestTimeout { get; init; }
             public string Quality { get; init; }
+        }
+
+        private sealed class AggregationAccumulator
+        {
+            private readonly Dictionary<string, JObject> _items = new(StringComparer.OrdinalIgnoreCase);
+            private readonly string _fallbackTitle;
+            private readonly string _fallbackOriginal;
+            private readonly int _fallbackYear;
+
+            public AggregationAccumulator(string title, string originalTitle, int year)
+            {
+                _fallbackTitle = title;
+                _fallbackOriginal = originalTitle;
+                _fallbackYear = year;
+            }
+
+            public bool AddResult(SmartFilterEngine engine, ProviderFetchResult result, string expectedType)
+            {
+                bool changed = false;
+
+                foreach (var normalized in engine.BuildNormalizedItems(result, expectedType, _fallbackTitle, _fallbackOriginal, _fallbackYear))
+                {
+                    if (normalized == null)
+                        continue;
+
+                    string key = normalized.Value<string>("id");
+                    if (string.IsNullOrWhiteSpace(key))
+                        continue;
+
+                    if (_items.TryGetValue(key, out var existing))
+                    {
+                        if (SmartFilterEngine.MergeNormalizedItem(existing, normalized))
+                            changed = true;
+                    }
+                    else
+                    {
+                        _items[key] = (JObject)normalized.DeepClone();
+                        changed = true;
+                    }
+                }
+
+                return changed;
+            }
+
+            public (JArray Items, AggregationMetadata Metadata) BuildSnapshot()
+            {
+                var array = new JArray(_items.Values.Select(v => v.DeepClone()));
+                var metadata = SmartFilterEngine.BuildMetadata(array);
+                return (array, metadata);
+            }
         }
 
         private readonly IMemoryCache memoryCache;
@@ -191,31 +243,53 @@ namespace SmartFilter
 
             if (providers.Count == 0)
             {
-                SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
+                SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers, new JArray(), new AggregationMetadata());
                 return aggregation;
             }
 
             SmartFilterProgress.Initialize(memoryCache, progressKey, providers);
 
-            var tasks = providers.Select(provider => FetchProviderTemplateAsync(provider, baseQuery, progressKey)).ToList();
-            var results = await Task.WhenAll(tasks);
+            var accumulator = new AggregationAccumulator(title, originalTitle, year);
+            var successful = new List<ProviderFetchResult>();
+            var allResults = new List<ProviderFetchResult>();
 
-            foreach (var result in results)
+            var pendingTasks = providers
+                .Select(provider => FetchProviderTemplateAsync(provider, baseQuery, progressKey))
+                .ToList();
+
+            while (pendingTasks.Count > 0)
+            {
+                var completedTask = await Task.WhenAny(pendingTasks);
+                pendingTasks.Remove(completedTask);
+
+                var result = await completedTask;
+                allResults.Add(result);
+
                 ApplyAdapters(result);
 
-            var successful = results.Where(r => r.Success && r.Payload != null).ToList();
-            if (successful.Count > 0)
-                aggregation.Type = DetermineContentType(successful, serial, providerFilter, requestedSeason, aggregation.Type);
+                if (result.Success && result.Payload != null)
+                {
+                    successful.Add(result);
+                    aggregation.Type = DetermineContentType(successful, serial, providerFilter, requestedSeason, aggregation.Type);
+
+                    if (accumulator.AddResult(this, result, aggregation.Type))
+                    {
+                        var (partial, metadata) = accumulator.BuildSnapshot();
+                        SmartFilterProgress.UpdatePartial(memoryCache, progressKey, partial, metadata, ready: false);
+                    }
+                }
+            }
 
             if (preferSingleProvider && string.Equals(aggregation.Type, "similar", StringComparison.OrdinalIgnoreCase))
                 aggregation.Type = requestedSeason > 0 ? "episode" : "season";
 
-            var payload = BuildAggregationData(successful, aggregation.Type, providerFilter, baseQuery);
-            aggregation.Data = payload.Json;
-            aggregation.Html = payload.Html;
-            aggregation.Providers = results.Select(r => r.ToStatus()).OrderBy(p => p.Index ?? int.MaxValue).ThenBy(p => p.Name).ToList();
+            var (items, finalMetadata) = accumulator.BuildSnapshot();
+            aggregation.Data = items ?? new JArray();
+            aggregation.Html = null;
+            aggregation.Metadata = finalMetadata;
+            aggregation.Providers = allResults.Select(r => r.ToStatus()).OrderBy(p => p.Index ?? int.MaxValue).ThenBy(p => p.Name).ToList();
 
-            SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
+            SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers, items, finalMetadata);
             return aggregation;
         }
 
@@ -620,7 +694,10 @@ namespace SmartFilter
                         Number = seasonNumber,
                         Name = seasonName,
                         Link = seasonLink,
-                        Provider = providerName
+                        Provider = providerName,
+                        Quality = seasonObj.Value<string>("quality")
+                                   ?? seasonObj.Value<string>("maxquality")
+                                   ?? quality
                     });
                 }
 
@@ -696,6 +773,7 @@ namespace SmartFilter
 
             var voiceTemplate = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
             var json = ParseTemplateJson(seasonTpl.ToJson(voiceTemplate));
+            ApplySeasonMetadata(json, seasons, quality);
             var html = seasonTpl.ToHtml(voiceTemplate);
             return new AggregatedPayload(json, html);
         }
@@ -769,7 +847,10 @@ namespace SmartFilter
                         Number = seasonNumber,
                         Name = $"{seasonNumber.Value} сезон",
                         Link = link,
-                        Provider = providerName
+                        Provider = providerName,
+                        Quality = episodeObj.Value<string>("quality")
+                                   ?? episodeObj.Value<string>("maxquality")
+                                   ?? localQuality
                     });
                 }
             }
@@ -825,6 +906,7 @@ namespace SmartFilter
 
             var voiceTemplate = processedVoices.Count > 0 ? BuildVoiceTemplate(processedVoices) : (VoiceTpl?)null;
             var json = ParseTemplateJson(seasonTpl.ToJson(voiceTemplate));
+            ApplySeasonMetadata(json, seasons, localQuality);
             var html = seasonTpl.ToHtml(voiceTemplate);
             return new AggregatedPayload(json, html);
         }
@@ -960,8 +1042,7 @@ namespace SmartFilter
             }
 
             var json = ParseTemplateJson(episodeTpl.ToJson(voiceTemplate));
-            if (!string.IsNullOrWhiteSpace(quality) && json is JObject obj)
-                obj["maxquality"] = quality;
+            ApplyEpisodeMetadata(json, episodes, quality);
 
             var html = BuildEpisodeHtml(episodeTpl, voiceTemplate);
             return new AggregatedPayload(json, html);
@@ -1109,15 +1190,7 @@ namespace SmartFilter
             }
 
             var json = ParseTemplateJson(episodeTpl.ToJson(voiceTemplate));
-
-            if (!string.IsNullOrWhiteSpace(localQuality) && json is JObject obj && obj.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
-            {
-                foreach (var item in dataArray.OfType<JObject>())
-                {
-                    if (string.IsNullOrWhiteSpace(item.Value<string>("maxquality")))
-                        item["maxquality"] = localQuality;
-                }
-            }
+            ApplyEpisodeMetadata(json, episodes, localQuality);
 
             var html = BuildEpisodeHtml(episodeTpl, voiceTemplate);
             return new AggregatedPayload(json, html);
@@ -1860,6 +1933,18 @@ namespace SmartFilter
 
         private static string ExtractQuality(JToken payload)
         {
+            if (payload is JArray array)
+            {
+                foreach (var item in array)
+                {
+                    string nested = ExtractQuality(item);
+                    if (!string.IsNullOrWhiteSpace(nested))
+                        return nested;
+                }
+
+                return null;
+            }
+
             if (payload is not JObject obj)
                 return null;
 
@@ -1881,9 +1966,97 @@ namespace SmartFilter
                     if (!string.IsNullOrWhiteSpace(nestedQuality))
                         return nestedQuality;
                 }
+                else if (property.Value is JArray nestedArray)
+                {
+                    string nestedQuality = ExtractQuality(nestedArray);
+                    if (!string.IsNullOrWhiteSpace(nestedQuality))
+                        return nestedQuality;
+                }
             }
 
             return null;
+        }
+
+        private static void ApplySeasonMetadata(JToken json, IReadOnlyList<SeasonEntry> seasons, string fallbackQuality)
+        {
+            if (json is not JObject root || seasons == null || seasons.Count == 0)
+                return;
+
+            if (string.IsNullOrWhiteSpace(root.Value<string>("maxquality")) && !string.IsNullOrWhiteSpace(fallbackQuality))
+                root["maxquality"] = fallbackQuality;
+
+            if (root.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
+            {
+                for (int index = 0; index < dataArray.Count && index < seasons.Count; index++)
+                {
+                    if (dataArray[index] is not JObject item)
+                        continue;
+
+                    var season = seasons[index];
+
+                    if (!string.IsNullOrWhiteSpace(season.Provider))
+                    {
+                        item["provider"] ??= season.Provider;
+                        item["details"] ??= season.Provider;
+                    }
+
+                    string quality = season.Quality;
+                    if (string.IsNullOrWhiteSpace(quality))
+                        quality = fallbackQuality;
+
+                    if (!string.IsNullOrWhiteSpace(quality))
+                    {
+                        if (string.IsNullOrWhiteSpace(item.Value<string>("maxquality")))
+                            item["maxquality"] = quality;
+
+                        item["smartfilterQuality"] = quality;
+                    }
+                }
+            }
+        }
+
+        private static void ApplyEpisodeMetadata(JToken json, IReadOnlyList<EpisodeEntry> episodes, string fallbackQuality)
+        {
+            if (json is not JObject root || episodes == null || episodes.Count == 0)
+                return;
+
+            if (string.IsNullOrWhiteSpace(root.Value<string>("maxquality")) && !string.IsNullOrWhiteSpace(fallbackQuality))
+                root["maxquality"] = fallbackQuality;
+
+            if (root.TryGetValue("data", out var dataToken) && dataToken is JArray dataArray)
+            {
+                for (int index = 0; index < dataArray.Count && index < episodes.Count; index++)
+                {
+                    if (dataArray[index] is not JObject item)
+                        continue;
+
+                    var episode = episodes[index];
+
+                    if (!string.IsNullOrWhiteSpace(episode.Provider))
+                    {
+                        item["provider"] ??= episode.Provider;
+                        item["details"] ??= episode.Provider;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(episode.Translation))
+                    {
+                        string voice = episode.Translation;
+                        item["translate"] ??= voice;
+                        item["voice"] ??= voice;
+                        item["voice_name"] ??= voice;
+                        item["smartfilterVoice"] = voice;
+                    }
+
+                    string quality = !string.IsNullOrWhiteSpace(episode.Quality) ? episode.Quality : fallbackQuality;
+                    if (!string.IsNullOrWhiteSpace(quality))
+                    {
+                        if (string.IsNullOrWhiteSpace(item.Value<string>("maxquality")))
+                            item["maxquality"] = quality;
+
+                        item["smartfilterQuality"] = quality;
+                    }
+                }
+            }
         }
 
         private static string NormalizeContentType(string contentType, int serial, int requestedSeason)
@@ -2688,6 +2861,432 @@ namespace SmartFilter
                    response.Contains("<!DOCTYPE", StringComparison.OrdinalIgnoreCase) ||
                    response.Contains("<html", StringComparison.OrdinalIgnoreCase) ||
                    response.Contains("<body", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private IEnumerable<JObject> BuildNormalizedItems(ProviderFetchResult result, string expectedType, string fallbackTitle, string fallbackOriginalTitle, int fallbackYear)
+        {
+            if (result?.Payload == null)
+                yield break;
+
+            string providerName = ResolveProviderName(result);
+            string defaultTitle = !string.IsNullOrWhiteSpace(fallbackTitle) ? fallbackTitle : fallbackOriginalTitle;
+
+            foreach (var token in ExtractItems(result.Payload, expectedType))
+            {
+                if (token is not JObject obj)
+                    continue;
+
+                var normalized = (JObject)obj.DeepClone();
+
+                if (!NormalizeEpisodeItem(normalized, result, strict: false, out _))
+                {
+                    if (!EnsureUrl(normalized, "url", "link", "stream", "file", "src", "iframe", "watch", "hls", "manifest"))
+                        continue;
+                }
+
+                string url = normalized.Value<string>("url");
+                if (string.IsNullOrWhiteSpace(url))
+                    continue;
+
+                string title = ExtractItemTitle(normalized, defaultTitle, providerName);
+                int? season = ExtractFirstInt(normalized, "season", "s", "season_number", "seasonNumber");
+                int? episode = ExtractFirstInt(normalized, "episode", "e", "episode_number", "episodeNumber");
+                string voiceRaw = ExtractVoiceLabel(normalized, providerName);
+                string qualityRaw = ExtractQualityCandidate(normalized, result.Payload);
+
+                var normalization = NormalizationStore.Instance;
+                var quality = normalization.NormalizeQuality(qualityRaw);
+                var voice = normalization.NormalizeVoice(voiceRaw);
+
+                string qualityCode = !string.IsNullOrEmpty(quality.Code) ? quality.Code : SanitizeKey(qualityRaw);
+                string qualityLabel = !string.IsNullOrEmpty(quality.Label) ? quality.Label : (qualityRaw ?? string.Empty);
+                string voiceCode = !string.IsNullOrEmpty(voice.Code) ? voice.Code : SanitizeKey(voiceRaw);
+                string voiceLabel = !string.IsNullOrEmpty(voice.Label) ? voice.Label : (voiceRaw ?? string.Empty);
+
+                int? year = normalized.Value<int?>("year") ?? (fallbackYear > 0 ? fallbackYear : (int?)null);
+
+                string key = BuildItemKey(title, year, season, episode, voiceCode, qualityCode);
+
+                var item = new JObject
+                {
+                    ["id"] = key,
+                    ["title"] = title ?? string.Empty,
+                    ["season"] = season.HasValue ? new JValue(season.Value) : JValue.CreateNull(),
+                    ["episode"] = episode.HasValue ? new JValue(episode.Value) : JValue.CreateNull(),
+                    ["source"] = "SmartFilter",
+                    ["quality_code"] = qualityCode ?? string.Empty,
+                    ["quality_label"] = qualityLabel ?? string.Empty,
+                    ["voice_code"] = voiceCode ?? string.Empty,
+                    ["voice_label"] = voiceLabel ?? string.Empty,
+                    ["url"] = url,
+                    ["is_camrip"] = DetermineCamripFlag(qualityCode, qualityLabel, normalized),
+                    ["is_hdr"] = DetermineHdrFlag(normalized),
+                    ["size_mb"] = ParseSizeMb(normalized.Value<string>("size") ?? normalized.Value<string>("size_mb") ?? normalized.Value<string>("filesize")),
+                    ["duration"] = ParseDurationSeconds(normalized.Value<string>("duration") ?? normalized.Value<string>("time") ?? normalized.Value<string>("length")),
+                    ["poster"] = ExtractPoster(normalized),
+                    ["year"] = year.HasValue ? new JValue(year.Value) : JValue.CreateNull()
+                };
+
+                var alternative = new JObject
+                {
+                    ["provider"] = providerName,
+                    ["plugin"] = result.ProviderPlugin ?? string.Empty,
+                    ["url"] = url,
+                    ["quality_label"] = qualityLabel ?? string.Empty,
+                    ["quality_code"] = qualityCode ?? string.Empty,
+                    ["voice_label"] = voiceLabel ?? string.Empty,
+                    ["voice_code"] = voiceCode ?? string.Empty
+                };
+
+                if (normalized.TryGetValue("headers", out var headersToken))
+                    alternative["headers"] = headersToken.DeepClone();
+
+                if (normalized.TryGetValue("translation", out var translationToken))
+                    alternative["translation"] = translationToken.DeepClone();
+                else if (!string.IsNullOrWhiteSpace(voiceRaw))
+                    alternative["translation"] = voiceRaw;
+
+                if (normalized.TryGetValue("quality_list", out var qualityListToken))
+                    alternative["quality_list"] = qualityListToken.DeepClone();
+
+                if (normalized.TryGetValue("streams", out var streamsToken))
+                    alternative["streams"] = streamsToken.DeepClone();
+
+                if (normalized.TryGetValue("files", out var filesToken))
+                    alternative["files"] = filesToken.DeepClone();
+
+                if (normalized.TryGetValue("manifest", out var manifestToken))
+                    alternative["manifest"] = manifestToken.DeepClone();
+
+                item["alternatives"] = new JArray { alternative };
+
+                yield return item;
+            }
+        }
+
+        private static bool MergeNormalizedItem(JObject target, JObject source)
+        {
+            if (target == null || source == null)
+                return false;
+
+            bool changed = false;
+            var targetAlt = (JArray)(target["alternatives"] ?? new JArray());
+            target["alternatives"] = targetAlt;
+
+            var existingUrls = new HashSet<string>(targetAlt.OfType<JObject>().Select(o => o.Value<string>("url") ?? string.Empty), StringComparer.OrdinalIgnoreCase);
+            var sourceAlt = source["alternatives"] as JArray;
+            if (sourceAlt != null)
+            {
+                foreach (var alt in sourceAlt.OfType<JObject>())
+                {
+                    string url = alt.Value<string>("url") ?? string.Empty;
+                    if (existingUrls.Add(url))
+                    {
+                        targetAlt.Add(alt.DeepClone());
+                        changed = true;
+                        PromoteBestQuality(target, alt);
+                    }
+                    else
+                    {
+                        PromoteBestQuality(target, alt);
+                    }
+                }
+            }
+
+            return changed;
+        }
+
+        private static void PromoteBestQuality(JObject target, JObject candidate)
+        {
+            if (target == null || candidate == null)
+                return;
+
+            string existingQuality = target.Value<string>("quality_code") ?? string.Empty;
+            string candidateQuality = candidate.Value<string>("quality_code") ?? string.Empty;
+
+            int existingScore = ScoreQuality(existingQuality);
+            int candidateScore = ScoreQuality(candidateQuality);
+
+            if (candidateScore > existingScore)
+            {
+                target["quality_code"] = candidateQuality;
+                target["quality_label"] = candidate.Value<string>("quality_label") ?? candidateQuality;
+                target["url"] = candidate.Value<string>("url") ?? target.Value<string>("url");
+                target["voice_code"] = candidate.Value<string>("voice_code") ?? target.Value<string>("voice_code");
+                target["voice_label"] = candidate.Value<string>("voice_label") ?? target.Value<string>("voice_label");
+            }
+        }
+
+        private static AggregationMetadata BuildMetadata(JArray items)
+        {
+            var metadata = new AggregationMetadata();
+            if (items == null)
+                return metadata;
+
+            metadata.TotalItems = items.Count;
+
+            var qualityCounts = new Dictionary<string, AggregationFacet>(StringComparer.OrdinalIgnoreCase);
+            var voiceCounts = new Dictionary<string, AggregationFacet>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var token in items.OfType<JObject>())
+            {
+                string qualityCode = token.Value<string>("quality_code") ?? string.Empty;
+                string qualityLabel = token.Value<string>("quality_label") ?? string.Empty;
+                if (!qualityCounts.TryGetValue(qualityCode, out var qualityFacet))
+                {
+                    qualityFacet = new AggregationFacet { Code = qualityCode, Label = string.IsNullOrEmpty(qualityLabel) ? "-" : qualityLabel, Count = 0 };
+                    qualityCounts[qualityCode] = qualityFacet;
+                }
+                qualityFacet.Count++;
+
+                string voiceCode = token.Value<string>("voice_code") ?? string.Empty;
+                string voiceLabel = token.Value<string>("voice_label") ?? string.Empty;
+                if (!voiceCounts.TryGetValue(voiceCode, out var voiceFacet))
+                {
+                    voiceFacet = new AggregationFacet { Code = voiceCode, Label = string.IsNullOrEmpty(voiceLabel) ? "-" : voiceLabel, Count = 0 };
+                    voiceCounts[voiceCode] = voiceFacet;
+                }
+                voiceFacet.Count++;
+            }
+
+            metadata.Qualities = qualityCounts;
+            metadata.Voices = voiceCounts;
+            return metadata;
+        }
+
+        private static string ExtractItemTitle(JObject obj, string fallbackTitle, string providerName)
+        {
+            string[] keys = { "title", "name", "original_title", "originalTitle", "label" };
+            foreach (var key in keys)
+            {
+                if (!obj.TryGetValue(key, out var token) || token == null)
+                    continue;
+
+                var value = token.ToString();
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value.Trim();
+            }
+
+            return fallbackTitle ?? providerName ?? string.Empty;
+        }
+
+        private static int? ExtractFirstInt(JObject obj, params string[] keys)
+        {
+            foreach (var key in keys)
+            {
+                if (string.IsNullOrWhiteSpace(key))
+                    continue;
+
+                if (!obj.TryGetValue(key, out var token) || token == null)
+                    continue;
+
+                if (token.Type == JTokenType.Integer)
+                    return token.Value<int>();
+
+                if (int.TryParse(token.ToString(), out int parsed))
+                    return parsed;
+            }
+
+            return null;
+        }
+
+        private static string ExtractVoiceLabel(JObject obj, string providerName)
+        {
+            string[] keys =
+            {
+                "voice", "voice_name", "voiceName", "translator", "translation", "author", "dub", "voice_label", "voiceLabel", "voice_title"
+            };
+
+            foreach (var key in keys)
+            {
+                if (!obj.TryGetValue(key, out var token) || token == null)
+                    continue;
+
+                var value = token.ToString();
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value.Trim();
+            }
+
+            if (obj.TryGetValue("details", out var detailsToken))
+            {
+                var details = detailsToken.ToString();
+                if (!string.IsNullOrWhiteSpace(details) && !string.Equals(details, providerName, StringComparison.OrdinalIgnoreCase))
+                    return details.Trim();
+            }
+
+            return providerName;
+        }
+
+        private static string ExtractQualityCandidate(JObject obj, JToken payload)
+        {
+            string[] keys =
+            {
+                "quality", "quality_full", "quality_name", "qualityName", "maxquality", "maxQuality", "resolution", "video_quality"
+            };
+
+            foreach (var key in keys)
+            {
+                if (!obj.TryGetValue(key, out var token) || token == null)
+                    continue;
+
+                var value = token.ToString();
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value.Trim();
+            }
+
+            if (payload != null)
+            {
+                var fallback = ExtractQuality(payload);
+                if (!string.IsNullOrWhiteSpace(fallback))
+                    return fallback;
+            }
+
+            return null;
+        }
+
+        private static string BuildItemKey(string title, int? year, int? season, int? episode, string voiceCode, string qualityCode)
+        {
+            string normalizedTitle = SanitizeKey(title);
+            string normalizedVoice = SanitizeKey(voiceCode);
+            string normalizedQuality = SanitizeKey(qualityCode);
+
+            return string.Join("|", new[]
+            {
+                normalizedTitle,
+                year.HasValue ? year.Value.ToString() : string.Empty,
+                season.HasValue ? season.Value.ToString() : string.Empty,
+                episode.HasValue ? episode.Value.ToString() : string.Empty,
+                normalizedVoice,
+                normalizedQuality
+            });
+        }
+
+        private static string SanitizeKey(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            var chars = value.Trim().ToLowerInvariant().ToCharArray();
+            for (int i = 0; i < chars.Length; i++)
+            {
+                char c = chars[i];
+                if (!char.IsLetterOrDigit(c))
+                    chars[i] = '-';
+            }
+
+            return new string(chars).Trim('-');
+        }
+
+        private static bool DetermineCamripFlag(string qualityCode, string qualityLabel, JObject obj)
+        {
+            if (!string.IsNullOrWhiteSpace(qualityCode) && qualityCode.Contains("cam", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (!string.IsNullOrWhiteSpace(qualityLabel) && qualityLabel.Contains("cam", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (obj != null)
+            {
+                if (obj.TryGetValue("camrip", out var camToken) && camToken.Type == JTokenType.Boolean)
+                    return camToken.Value<bool>();
+            }
+
+            return false;
+        }
+
+        private static bool DetermineHdrFlag(JObject obj)
+        {
+            if (obj == null)
+                return false;
+
+            if (obj.TryGetValue("hdr", out var hdrToken) && hdrToken.Type == JTokenType.Boolean)
+                return hdrToken.Value<bool>();
+
+            foreach (var key in new[] { "quality", "quality_full", "quality_name" })
+            {
+                if (!obj.TryGetValue(key, out var token) || token == null)
+                    continue;
+
+                var value = token.ToString();
+                if (value.Contains("hdr", StringComparison.OrdinalIgnoreCase) || value.Contains("dolby", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static double? ParseSizeMb(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            value = value.Trim();
+
+            double multiplier = 1.0;
+            if (value.EndsWith("gb", StringComparison.OrdinalIgnoreCase))
+            {
+                multiplier = 1024.0;
+                value = value[..^2];
+            }
+            else if (value.EndsWith("mb", StringComparison.OrdinalIgnoreCase))
+            {
+                multiplier = 1.0;
+                value = value[..^2];
+            }
+
+            if (double.TryParse(value.Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double parsed))
+                return Math.Round(parsed * multiplier, 2);
+
+            return null;
+        }
+
+        private static int? ParseDurationSeconds(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            value = value.Trim();
+            if (TimeSpan.TryParse(value, out var span))
+                return (int)span.TotalSeconds;
+
+            if (int.TryParse(value, out int seconds))
+                return seconds;
+
+            return null;
+        }
+
+        private static string ExtractPoster(JObject obj)
+        {
+            string[] keys = { "poster", "img", "image", "cover", "thumbnail" };
+            foreach (var key in keys)
+            {
+                if (!obj.TryGetValue(key, out var token) || token == null)
+                    continue;
+
+                var value = token.ToString();
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+            }
+
+            return null;
+        }
+
+        private static int ScoreQuality(string qualityCode)
+        {
+            if (string.IsNullOrWhiteSpace(qualityCode))
+                return -1;
+
+            return qualityCode.ToLowerInvariant() switch
+            {
+                "2160p" => 6,
+                "1440p" => 5,
+                "1080p" => 4,
+                "720p" => 3,
+                "480p" => 2,
+                "360p" => 1,
+                "camrip" => 0,
+                _ => 0
+            };
         }
     }
 }
