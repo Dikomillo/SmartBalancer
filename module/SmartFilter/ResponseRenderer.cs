@@ -153,6 +153,7 @@ namespace SmartFilter
                                    token.Value<string>("voice_name") ??
                                    token.Value<string>("quality") ??
                                    "Оригинал";
+                string provider = token.Value<string>("provider") ?? token.Value<string>("balanser");
 
                 html.Append("<div class=\"videos__item videos__movie selector ");
                 if (first)
@@ -161,7 +162,15 @@ namespace SmartFilter
                     first = false;
                 }
 
-                html.Append("\" media=\"\" data-json='");
+                html.Append("\" media=\"\"");
+                html.Append(" data-folder=\"false\"");
+                if (!string.IsNullOrWhiteSpace(provider))
+                {
+                    html.Append(" data-provider=\"");
+                    html.Append(WebUtility.HtmlEncode(provider));
+                    html.Append("\"");
+                }
+                html.Append(" data-json='");
                 html.Append(WebUtility.HtmlEncode(serialized));
                 html.Append("'><div class=\"videos__item-imgbox videos__movie-imgbox\"></div><div class=\"videos__item-title\">");
                 html.Append(WebUtility.HtmlEncode(translate));
@@ -189,8 +198,10 @@ namespace SmartFilter
                 return null;
 
             EnsureMethod(token);
+            EnsureType(token, "movie");
             EnsureStream(token);
             NormalizeHeaders(token);
+            EnsureProvider(token);
             EnsureTranslate(token);
             EnsureMaxQuality(token);
             EnsureDetails(token);
@@ -244,7 +255,14 @@ namespace SmartFilter
                     first = false;
                 }
 
-                html.Append("\" data-json='");
+                html.Append("\" data-folder=\"false\"");
+                if (!string.IsNullOrWhiteSpace(provider))
+                {
+                    html.Append(" data-provider=\"");
+                    html.Append(WebUtility.HtmlEncode(provider));
+                    html.Append("\"");
+                }
+                html.Append(" data-json='");
                 html.Append(WebUtility.HtmlEncode(serialized));
                 html.Append("'><div class=\"videos__season-layers\"></div><div class=\"videos__item-imgbox videos__season-imgbox\"><div class=\"videos__item-title videos__season-title\">");
                 html.Append(WebUtility.HtmlEncode(name));
@@ -413,6 +431,7 @@ namespace SmartFilter
 
                 int? season = TryParseInt(token["season"]) ?? TryParseInt(token["s"]);
                 int? episode = TryParseInt(token["episode"]) ?? TryParseInt(token["e"]);
+                string provider = token.Value<string>("provider") ?? token.Value<string>("balanser");
 
                 html.Append("<div class=\"videos__item videos__movie selector ");
                 if (first)
@@ -427,6 +446,14 @@ namespace SmartFilter
                     html.Append(" s=\"" + season.Value + "\"");
                 if (episode.HasValue)
                     html.Append(" e=\"" + episode.Value + "\"");
+
+                html.Append(" data-folder=\"false\"");
+                if (!string.IsNullOrWhiteSpace(provider))
+                {
+                    html.Append(" data-provider=\"");
+                    html.Append(WebUtility.HtmlEncode(provider));
+                    html.Append("\"");
+                }
 
                 html.Append(" data-json='");
                 html.Append(WebUtility.HtmlEncode(serialized));
@@ -459,8 +486,10 @@ namespace SmartFilter
                 return null;
 
             EnsureMethod(token);
+            EnsureType(token, "episode");
             EnsureStream(token);
             NormalizeHeaders(token);
+            EnsureProvider(token);
             EnsureTranslate(token);
             EnsureMaxQuality(token);
             EnsureDetails(token);
@@ -520,6 +549,18 @@ namespace SmartFilter
             var method = obj.Value<string>("method");
             if (string.IsNullOrWhiteSpace(method))
                 obj["method"] = "play";
+        }
+
+        private static void EnsureType(JObject obj, string type)
+        {
+            if (obj == null || string.IsNullOrWhiteSpace(type))
+                return;
+
+            var existing = obj.Value<string>("type");
+            if (!string.IsNullOrWhiteSpace(existing))
+                return;
+
+            obj["type"] = type;
         }
 
         private static bool EnsureUrl(JObject obj, params string[] fallbackKeys)
@@ -592,6 +633,20 @@ namespace SmartFilter
             {
                 obj.Remove("headers");
             }
+        }
+
+        private static void EnsureProvider(JObject obj)
+        {
+            if (obj == null)
+                return;
+
+            var provider = obj.Value<string>("provider");
+            if (!string.IsNullOrWhiteSpace(provider))
+                return;
+
+            provider = obj.Value<string>("balanser") ?? obj.Value<string>("details");
+            if (!string.IsNullOrWhiteSpace(provider))
+                obj["provider"] = provider;
         }
 
         private static void EnsureTranslate(JObject obj)
