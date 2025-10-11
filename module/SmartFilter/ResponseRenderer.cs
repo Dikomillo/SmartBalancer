@@ -20,6 +20,9 @@ namespace SmartFilter
 
             string voiceHtml = null;
             string maxQuality = null;
+            JArray seasonData = null;
+            JArray episodeData = null;
+            JObject groupedSeasons = null;
 
             if (isSeason || isEpisode)
             {
@@ -29,21 +32,40 @@ namespace SmartFilter
 
                 if (voiceData != null && voiceData.Count > 0)
                     voiceHtml = BuildVoiceHtml(voiceData);
+
+                if (seriesData is JObject container)
+                {
+                    seasonData = container["seasons"] as JArray;
+                    episodeData = container["episodes"] as JArray;
+                    groupedSeasons = container["groupedSeasons"] as JObject;
+                }
+                else if (seriesData is JArray array)
+                {
+                    seasonData = array;
+                }
             }
 
-            if (data is JObject grouped)
+            if (isSeason)
             {
-                if (!grouped.Properties().Any())
-                    return voiceHtml ?? string.Empty;
-
-                if (isSeason)
+                if (groupedSeasons != null && groupedSeasons.Properties().Any())
                 {
-                    var groupedHtml = BuildGroupedSeasonHtml(grouped);
+                    var groupedHtml = BuildGroupedSeasonHtml(groupedSeasons, maxQuality);
                     if (string.IsNullOrEmpty(groupedHtml))
                         return voiceHtml ?? string.Empty;
 
                     return string.Concat(voiceHtml ?? string.Empty, groupedHtml);
                 }
+
+                data = seasonData ?? new JArray();
+            }
+            else if (isEpisode)
+            {
+                data = episodeData ?? new JArray();
+            }
+            else if (data is JObject grouped)
+            {
+                if (!grouped.Properties().Any())
+                    return voiceHtml ?? string.Empty;
 
                 data = Flatten(grouped);
             }
@@ -229,6 +251,10 @@ namespace SmartFilter
 
             foreach (var token in data.OfType<JObject>())
             {
+                var type = token.Value<string>("type");
+                if (!string.IsNullOrWhiteSpace(type) && !string.Equals(type, "season", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 string url = token.Value<string>("url") ?? token.Value<string>("link");
                 if (string.IsNullOrEmpty(url))
                     continue;
@@ -330,11 +356,18 @@ namespace SmartFilter
             return html.ToString();
         }
 
-        private static string BuildGroupedSeasonHtml(JObject groupedData)
+        private static string BuildGroupedSeasonHtml(JObject groupedData, string maxQuality)
         {
             var html = new StringBuilder();
             html.Append("<div class=\"videos__line\" data-smartfilter=\"true\">");
             bool firstProvider = true;
+
+            if (!string.IsNullOrWhiteSpace(maxQuality))
+            {
+                html.Append("<!--q:");
+                html.Append(WebUtility.HtmlEncode(maxQuality));
+                html.Append("-->");
+            }
 
             foreach (var property in groupedData.Properties().OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase))
             {
@@ -342,6 +375,8 @@ namespace SmartFilter
                     continue;
 
                 string providerName = property.Name;
+                if (string.Equals(providerName, "default", StringComparison.OrdinalIgnoreCase))
+                    providerName = "Каталог";
                 bool expand = firstProvider;
 
                 var folderPayload = new JObject
@@ -425,6 +460,10 @@ namespace SmartFilter
 
             foreach (var token in data.OfType<JObject>())
             {
+                var type = token.Value<string>("type");
+                if (!string.IsNullOrWhiteSpace(type) && !string.Equals(type, "episode", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 var serialized = SerializeEpisodeItem(token);
                 if (serialized == null)
                     continue;
@@ -680,6 +719,12 @@ namespace SmartFilter
             if (qualityToken.Type == JTokenType.String)
             {
                 var quality = qualityToken.ToString();
+                if (!string.IsNullOrWhiteSpace(quality))
+                    obj["maxquality"] = quality;
+            }
+            else if (qualityToken is JArray qualityArray && qualityArray.Count > 0)
+            {
+                var quality = qualityArray.First!.ToString();
                 if (!string.IsNullOrWhiteSpace(quality))
                     obj["maxquality"] = quality;
             }
