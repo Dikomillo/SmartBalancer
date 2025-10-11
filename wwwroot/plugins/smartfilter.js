@@ -658,8 +658,8 @@
                 }
 
                 .smartfilter-sfilter-button.enabled {
-                    opacity: 1;
-                    cursor: pointer;
+                    opacity: 1 !important;
+                    cursor: pointer !important;
                 }
 
                 .smartfilter-meta {
@@ -895,13 +895,154 @@
             if (event && typeof event.preventDefault === 'function')
                 event.preventDefault();
 
-            if (!Array.isArray(this.sfilterItems) || !this.sfilterItems.length) {
-                if (window.Lampa && Lampa.Toast && typeof Lampa.Toast.show === 'function')
-                    Lampa.Toast.show('Данные еще загружаются', 2500);
+            const ready = Array.isArray(this.sfilterItems) && this.sfilterItems.length > 0;
+
+            if (ready) {
+                this.openSFilterModal();
                 return;
             }
 
-            this.openSFilterModal();
+            this.requestSmartFilterData().then((items) => {
+                const hasItems = Array.isArray(items) && items.length > 0;
+                const cached = Array.isArray(this.sfilterItems) && this.sfilterItems.length > 0;
+
+                if (hasItems || cached) {
+                    this.openSFilterModal();
+                    return;
+                }
+
+                if (window.Lampa && Lampa.Toast && typeof Lampa.Toast.show === 'function')
+                    Lampa.Toast.show('Данные ещё не готовы', 2500);
+            }).catch(() => {
+                if (window.Lampa && Lampa.Toast && typeof Lampa.Toast.show === 'function')
+                    Lampa.Toast.show('Ошибка загрузки данных', 2500);
+            });
+        },
+
+        buildSmartFilterRequestUrl(forceJson = true) {
+            if (!window || !window.location)
+                return null;
+
+            const basePath = '/lite/smartfilter';
+            let search = '';
+
+            if (typeof window.location.search === 'string' && window.location.search)
+                search = window.location.search;
+
+            if (!search && typeof window.location.hash === 'string') {
+                const hash = window.location.hash;
+                const queryIndex = hash.indexOf('?');
+                if (queryIndex !== -1)
+                    search = hash.slice(queryIndex);
+            }
+
+            const params = [];
+            if (search) {
+                const query = search.charAt(0) === '?' ? search.slice(1) : search;
+                query.split('&').forEach((part) => {
+                    if (!part)
+                        return;
+                    const trimmed = part.trim();
+                    if (!trimmed)
+                        return;
+                    if (forceJson && trimmed.toLowerCase().startsWith('rjson='))
+                        return;
+                    params.push(trimmed);
+                });
+            }
+
+            if (forceJson)
+                params.push('rjson=true');
+
+            const queryString = params.length ? params.join('&') : '';
+            let url = basePath;
+            if (queryString)
+                url += `?${queryString}`;
+            else if (forceJson)
+                url += '?rjson=true';
+
+            const prepared = this.prepareRequestUrl(url);
+            return typeof prepared === 'string' && prepared ? prepared : url;
+        },
+
+        requestSmartFilterData(forceJson = true) {
+            const url = this.buildSmartFilterRequestUrl(forceJson);
+            if (!url)
+                return Promise.resolve([]);
+
+            const handleData = (data) => {
+                if (!data)
+                    return [];
+
+                const items = this.flattenItems(data);
+                if (Array.isArray(items) && items.length && (!Array.isArray(this.sfilterItems) || !this.sfilterItems.length)) {
+                    const container = this.ensureSFilterContainer();
+                    this.notifySFilterModule(items, {
+                        ensureButton: true,
+                        container,
+                        cachedData: data,
+                        cachedItems: items
+                    });
+                }
+                return items;
+            };
+
+            if (typeof window.fetch === 'function') {
+                return window.fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+                    .then((response) => {
+                        if (!response || !response.ok)
+                            throw new Error('Network error');
+                        return response.clone().text();
+                    })
+                    .then((text) => {
+                        if (!text)
+                            return [];
+
+                        let payload = null;
+                        try {
+                            payload = JSON.parse(text);
+                        } catch (err) {
+                            throw err;
+                        }
+
+                        return handleData(payload);
+                    });
+            }
+
+            return new Promise((resolve, reject) => {
+                if (typeof XMLHttpRequest !== 'function') {
+                    reject(new Error('Transport not available'));
+                    return;
+                }
+
+                const xhr = new XMLHttpRequest();
+                xhr.open('GET', url, true);
+
+                try {
+                    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                } catch (err) {
+                    /* ignore */
+                }
+
+                xhr.onreadystatechange = () => {
+                    if (xhr.readyState !== 4)
+                        return;
+
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const payload = xhr.responseText ? JSON.parse(xhr.responseText) : [];
+                            resolve(handleData(payload));
+                        } catch (err) {
+                            reject(err);
+                        }
+                    } else {
+                        reject(new Error(`Status ${xhr.status}`));
+                    }
+                };
+
+                xhr.onerror = () => reject(new Error('Network error'));
+                xhr.send(null);
+            });
         },
 
         updateSFilterButtonState() {
@@ -1606,11 +1747,27 @@
             };
         },
 
+        isSmartFilterProgressRequest(url) {
+            if (typeof url !== 'string')
+                return false;
+
+            return url.indexOf('/lite/smartfilter/progress') !== -1;
+        },
+
         isSmartFilterRequest(url) {
-            return typeof url === 'string' && url.indexOf('/lite/smartfilter') !== -1;
+            if (typeof url !== 'string')
+                return false;
+
+            if (this.isSmartFilterProgressRequest(url))
+                return false;
+
+            return url.indexOf('/lite/smartfilter') !== -1;
         },
 
         handleRequestStart(xhr) {
+            if (this.isSmartFilterProgressRequest(xhr.__smartfilter_url))
+                return;
+
             const info = this.parseRequestUrl(xhr.__smartfilter_url);
             this.progressHost = info.origin;
             this.progressKey = info.progressKey;
@@ -1651,6 +1808,9 @@
         },
 
         handleFetchStart(url) {
+            if (this.isSmartFilterProgressRequest(url))
+                return;
+
             const info = this.parseRequestUrl(url);
             this.progressHost = info.origin;
             this.progressKey = info.progressKey;

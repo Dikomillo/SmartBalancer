@@ -28,11 +28,11 @@ namespace SmartFilter
         public ActionResult Progress([FromQuery] string key)
         {
             if (string.IsNullOrWhiteSpace(key))
-                return Json(new { ready = false, total = 0, progress = 0, providers = Array.Empty<object>() });
+                return Json(new { ready = false, total = 0, completed = 0, progress = 0, items = 0, providers = Array.Empty<object>() });
 
             var snapshot = SmartFilterProgress.Snapshot(memoryCache, key);
             if (snapshot == null)
-                return Json(new { ready = false, total = 0, progress = 0, providers = Array.Empty<object>() });
+                return Json(new { ready = false, total = 0, completed = 0, progress = 0, items = 0, providers = Array.Empty<object>() });
 
             return Content(JsonConvert.SerializeObject(snapshot, Formatting.None), "application/json; charset=utf-8");
         }
