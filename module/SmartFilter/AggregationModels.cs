@@ -57,11 +57,24 @@ namespace SmartFilter
             return new AggregationMetadata
             {
                 TotalItems = TotalItems,
-                Qualities = Qualities?.ToDictionary(k => k.Key, v => v.Value.Clone(), StringComparer.OrdinalIgnoreCase)
-                    ?? new Dictionary<string, AggregationFacet>(StringComparer.OrdinalIgnoreCase),
-                Voices = Voices?.ToDictionary(k => k.Key, v => v.Value.Clone(), StringComparer.OrdinalIgnoreCase)
-                    ?? new Dictionary<string, AggregationFacet>(StringComparer.OrdinalIgnoreCase)
+                Qualities = CloneFacets(Qualities),
+                Voices = CloneFacets(Voices)
             };
+        }
+
+        private static Dictionary<string, AggregationFacet> CloneFacets(Dictionary<string, AggregationFacet> source)
+        {
+            var cloned = new Dictionary<string, AggregationFacet>(StringComparer.OrdinalIgnoreCase);
+
+            if (source == null)
+                return cloned;
+
+            foreach (var pair in source)
+            {
+                cloned[pair.Key] = pair.Value?.Clone();
+            }
+
+            return cloned;
         }
     }
 

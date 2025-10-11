@@ -76,7 +76,7 @@ namespace SmartFilter
                 state.Partial = partial != null ? (JArray)partial.DeepClone() : null;
                 state.Metadata = metadata?.Clone();
                 if (ready)
-                    state.Ready = true;
+                    state.MarkReady();
 
                 cache.Set(progressKey, state, ProgressTtl);
             }
@@ -169,6 +169,11 @@ namespace SmartFilter
                     Partial = (JArray)partial.DeepClone();
                 if (metadata != null)
                     Metadata = metadata.Clone();
+            }
+
+            public void MarkReady()
+            {
+                Ready = true;
             }
 
             public ProgressSnapshot ToSnapshot()
