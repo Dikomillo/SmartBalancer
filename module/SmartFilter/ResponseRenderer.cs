@@ -39,9 +39,9 @@ namespace SmartFilter
                     episodeData = container["episodes"] as JArray;
                     groupedSeasons = container["groupedSeasons"] as JObject;
                 }
-                else if (seriesData is JArray array)
+                else if (seriesData is JArray seriesArray)
                 {
-                    seasonData = array;
+                    seasonData = seriesArray;
                 }
             }
 
@@ -70,15 +70,15 @@ namespace SmartFilter
                 data = Flatten(grouped);
             }
 
-            if (data is not JArray array || array.Count == 0)
+            if (data is not JArray items || items.Count == 0)
                 return voiceHtml ?? string.Empty;
 
             string content = type switch
             {
-                "similar" => BuildSimilarHtml(array),
-                "season" => BuildSeasonHtml(array, maxQuality),
-                "episode" => BuildEpisodeHtml(array),
-                _ => BuildMovieHtml(array, title, originalTitle)
+                "similar" => BuildSimilarHtml(items),
+                "season" => BuildSeasonHtml(items, maxQuality),
+                "episode" => BuildEpisodeHtml(items),
+                _ => BuildMovieHtml(items, title, originalTitle)
             };
 
             if (string.IsNullOrEmpty(content))
