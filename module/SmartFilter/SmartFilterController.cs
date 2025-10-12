@@ -52,18 +52,30 @@ namespace SmartFilter
                 var engine = new SmartFilterEngine(host, HttpContext);
                 string rawQuery = HttpContext.Request.QueryString.HasValue ? HttpContext.Request.QueryString.Value : string.Empty;
 
-                var providerResults = await InvokeCache(
-                        BuildCacheKey("smartfilter:providers:", host,
-                            imdb_id,
-                            kinopoisk_id > 0 ? kinopoisk_id.ToString() : null,
-                            Normalize(title),
-                            Normalize(original_title),
-                            year > 0 ? year.ToString() : null,
-                            serial.ToString(),
-                            rawQuery),
-                        TimeSpan.FromMinutes(ResolveProviderCacheMinutes()),
-                        () => engine.AggregateProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language))
-                    ?? new List<ProviderResult>();
+                var providerCache = await InvokeCache<List<ProviderResult>>(
+                    BuildCacheKey("smartfilter:providers:", host,
+                        imdb_id,
+                        kinopoisk_id > 0 ? kinopoisk_id.ToString() : null,
+                        Normalize(title),
+                        Normalize(original_title),
+                        year > 0 ? year.ToString() : null,
+                        serial.ToString(),
+                        rawQuery),
+                    TimeSpan.FromMinutes(ResolveProviderCacheMinutes()),
+                    async res =>
+                    {
+                        var result = await engine.AggregateProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language);
+
+                        if (result == null || result.Count == 0)
+                            return res.Fail("no providers");
+
+                        return result;
+                    });
+
+                if (!providerCache.IsSuccess)
+                    Console.WriteLine($"⚠️ SmartFilter: Provider cache returned '{providerCache.ErrorMsg ?? "unknown"}'");
+
+                var providerResults = providerCache.Value ?? new List<ProviderResult>();
                 var validResults = providerResults.Where(r => r.HasContent).ToList();
 
                 Console.WriteLine($"📊 SmartFilter: Found {validResults.Count} valid results from {providerResults.Count} total providers");
@@ -127,10 +139,23 @@ namespace SmartFilter
                         ? TimeSpan.FromMinutes(ResolveSeasonCacheMinutes())
                         : TimeSpan.FromMinutes(ResolveEpisodeCacheMinutes());
 
-                    var serialsResult = await InvokeCache(
+                    var serialCache = await InvokeCache<SerialProcessResult>(
                         serialCacheKey,
                         serialTtl,
-                        () => Task.FromResult(GetSerials.Process(validResults, title, original_title, host, HttpContext.Request.QueryString.Value ?? string.Empty, rjson)));
+                        async res =>
+                        {
+                            var result = GetSerials.Process(validResults, title, original_title, host, HttpContext.Request.QueryString.Value ?? string.Empty, rjson);
+
+                            if (result == null || (result.SeasonCount == 0 && result.EpisodeCount == 0))
+                                return res.Fail("no content");
+
+                            return result;
+                        });
+
+                    if (!serialCache.IsSuccess)
+                        Console.WriteLine($"⚠️ SmartFilter: Serial cache returned '{serialCache.ErrorMsg ?? "unknown"}'");
+
+                    var serialsResult = serialCache.Value;
 
                     if (serialsResult == null || (serialsResult.SeasonCount == 0 && serialsResult.EpisodeCount == 0))
                         return OnError("Контент не найден");

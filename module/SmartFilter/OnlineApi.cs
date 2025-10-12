@@ -43,7 +43,7 @@ namespace SmartFilter
         {
             string token = null;
 
-            if (requestInfo != null)
+            if (!EqualityComparer<RequestModel>.Default.Equals(requestInfo, default))
             {
                 var type = requestInfo.GetType();
                 var property = type.GetProperty("token") ?? type.GetProperty("Token");
