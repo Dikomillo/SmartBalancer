@@ -3,13 +3,12 @@
 Пиши и отвечай на русском языке. 
 
 Основной пепозиторий:
-https://github.com/immisterio/Lampac/tree/main/Shared
-https://github.com/immisterio/Lampac/main/
+https://github.com/Dikomillo/lampacc/
 
 
 ## 📘 Общие правила
 
-- Этот проект использует документацию из DeepWiki репозитория `immisterio/Lampac`.
+- Этот проект использует документацию из DeepWiki репозитория `Dikomillo/lampacc`.
 - Все архитектурные и кодовые решения принимаются **только после опроса DeepWiki**.
 - Перед любым кодом агент обязан понять и подтвердить:
   - структуру проекта (`read_wiki_structure`);
@@ -76,11 +75,11 @@ https://github.com/immisterio/Lampac/main/
 
 ## 📚 Вспомогательные команды
 ### DeepWiki 
-- `deepwiki.read_wiki_structure { "repo": "immisterio/Lampac" }`
-- `deepwiki.read_wiki_contents { "repo": "immisterio/Lampac", "path": "README.md" }`
-- `deepwiki.ask_question { "repo": "immisterio/Lampac", "question": "..." }`
-- `deepwiki.search { "repo": "immisterio/Lampac", "q": "provider search" }`
-- `deepwiki.read { "repo": "immisterio/Lampac", "path": "src/modules/search.js" }`
+- `deepwiki.read_wiki_structure { "repo": "Dikomillo/lampacc" }`
+- `deepwiki.read_wiki_contents { "repo": "Dikomillo/lampacc", "path": "README.md" }`
+- `deepwiki.ask_question { "repo": "Dikomillo/lampacc", "question": "..." }`
+- `deepwiki.search { "repo": "Dikomillo/lampacc", "q": "provider search" }`
+- `deepwiki.read { "repo": "Dikomillo/lampacc", "path": "src/modules/search.js" }`
 ### Context7 (MCP)
 - `context7.resolve-library-id("axios@1")`
 - `context7.get-library-docs("axios", "interceptors")`
