@@ -90,11 +90,11 @@ namespace SmartFilter
                     if (aggregation == null)
                     {
                         var snapshot = SmartFilterProgress.Snapshot(memoryCache, progressKey) ?? new ProgressSnapshot();
-                        var response = BuildProgressResponse(snapshot, progressKey, ResolveAggregationType(serial, provider, requestedSeason));
+                        var response = BuildProgressResponse(snapshot, progressKey, ResolveAggregationType(serial, provider, requestedSeason), title, original_title);
                         return Content(response.ToString(Formatting.None), "application/json; charset=utf-8");
                     }
 
-                    var responseObject = BuildAggregationResponse(aggregation, progressKey);
+                    var responseObject = BuildAggregationResponse(aggregation, progressKey, title, original_title);
                     return Content(responseObject.ToString(Formatting.None), "application/json; charset=utf-8");
                 }
 
@@ -183,7 +183,7 @@ namespace SmartFilter
             }
         }
 
-        private JObject BuildProgressResponse(ProgressSnapshot snapshot, string progressKey, string fallbackType)
+        private JObject BuildProgressResponse(ProgressSnapshot snapshot, string progressKey, string fallbackType, string title, string originalTitle)
         {
             snapshot ??= new ProgressSnapshot();
 
@@ -218,10 +218,39 @@ namespace SmartFilter
             if (snapshot.Metadata != null)
                 response["metadata"] = JObject.FromObject(snapshot.Metadata);
 
+            if (snapshot.Partial != null)
+            {
+                var partialAggregation = new AggregationResult
+                {
+                    Type = fallbackType,
+                    Data = snapshot.Partial.DeepClone(),
+                    Providers = snapshot.Providers?.Select(p => p.Clone()).ToList(),
+                    Metadata = snapshot.Metadata
+                };
+
+                // DeepWiki: docs/architecture/online.md – preserve template compatibility during aggregation progress
+                var lampacPayload = LampacResponseBuilder.Build(partialAggregation, title, originalTitle);
+                if (lampacPayload != null)
+                {
+                    response["type"] = lampacPayload.Value<string>("type") ?? fallbackType;
+
+                    foreach (var property in lampacPayload)
+                    {
+                        if (property.Key.Equals("type", StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        response[property.Key] = property.Value.DeepClone();
+                    }
+                }
+            }
+
+            if (!response.ContainsKey("data"))
+                response["data"] = new JArray();
+
             return response;
         }
 
-        private JObject BuildAggregationResponse(AggregationResult aggregation, string progressKey)
+        private JObject BuildAggregationResponse(AggregationResult aggregation, string progressKey, string title, string originalTitle)
         {
             var providers = aggregation.Providers?.Select(p => new
             {
@@ -244,6 +273,24 @@ namespace SmartFilter
 
             if (aggregation.Metadata != null)
                 responseObject["metadata"] = JObject.FromObject(aggregation.Metadata);
+
+            // DeepWiki: docs/architecture/online.md – align SmartFilter payload with Lampac provider templates
+            var lampacPayload = LampacResponseBuilder.Build(aggregation, title, originalTitle);
+            if (lampacPayload != null)
+            {
+                responseObject["type"] = lampacPayload.Value<string>("type") ?? aggregation.Type;
+
+                foreach (var property in lampacPayload)
+                {
+                    if (property.Key.Equals("type", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    responseObject[property.Key] = property.Value.DeepClone();
+                }
+            }
+
+            if (!responseObject.ContainsKey("data"))
+                responseObject["data"] = new JArray();
 
             return responseObject;
         }

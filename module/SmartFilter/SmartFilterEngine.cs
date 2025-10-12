@@ -3,17 +3,17 @@ using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Caching.Memory;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Shared.Engine;
 using Shared.Models;
 using Shared.Models.Templates;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Net;
-using System.Net.Http;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Text.RegularExpressions;
-using System.Globalization;
 
 namespace SmartFilter
 {
@@ -189,23 +189,6 @@ namespace SmartFilter
             "ориг"
         };
 
-        private static readonly Lazy<HttpClient> sharedHttpClient = new(() =>
-        {
-            var handler = new SocketsHttpHandler
-            {
-                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                AllowAutoRedirect = true,
-                UseCookies = false
-            };
-
-            return new HttpClient(handler, disposeHandler: true)
-            {
-                Timeout = Timeout.InfiniteTimeSpan
-            };
-        });
-
-        private static HttpClient HttpClient => sharedHttpClient.Value;
-
         public SmartFilterEngine(IMemoryCache cache, string hostUrl, HttpContext context)
         {
             memoryCache = cache;
@@ -301,8 +284,8 @@ namespace SmartFilter
             try
             {
                 string eventsUrl = QueryHelpers.AddQueryString($"{host}/lite/events", baseQuery);
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(ModInit.conf.requestTimeoutSeconds > 0 ? ModInit.conf.requestTimeoutSeconds : 40));
-                var response = await HttpClient.GetStringAsync(eventsUrl, cts.Token);
+                int timeout = ModInit.conf.requestTimeoutSeconds > 0 ? ModInit.conf.requestTimeoutSeconds : 40;
+                string response = await Http.Get(eventsUrl, timeoutSeconds: timeout, statusCodeOK: false, weblog: false).ConfigureAwait(false);
 
                 if (string.IsNullOrWhiteSpace(response))
                     return providers;
@@ -373,48 +356,57 @@ namespace SmartFilter
                 SmartFilterProgress.MarkRunning(memoryCache, progressKey, provider.Name);
 
                 int maxAttempts = ModInit.conf.enableRetry ? Math.Max(1, ModInit.conf.maxRetryAttempts) : 1;
+                int timeout = ModInit.conf.requestTimeoutSeconds > 0 ? ModInit.conf.requestTimeoutSeconds : 25;
 
                 for (int attempt = 1; attempt <= maxAttempts; attempt++)
                 {
+                    if (attempt > 1)
+                        await Task.Delay(Math.Max(0, ModInit.conf.retryDelayMs)).ConfigureAwait(false);
+
                     try
                     {
-                        if (attempt > 1)
-                            await Task.Delay(Math.Max(0, ModInit.conf.retryDelayMs));
-
-                        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(ModInit.conf.requestTimeoutSeconds > 0 ? ModInit.conf.requestTimeoutSeconds : 25));
                         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-                        string response = await HttpClient.GetStringAsync(url, cts.Token);
+                        var httpResult = await Http.BaseGetAsync(url, timeoutSeconds: timeout, statusCodeOK: false, weblog: false).ConfigureAwait(false);
                         stopwatch.Stop();
                         result.ResponseTime = (int)stopwatch.ElapsedMilliseconds;
 
-                        if (TryParseProviderResponse(response, out JToken payload, out string contentType, out int count))
-                        {
-                            result.Payload = payload;
-                            result.ContentType = contentType;
-                            result.ItemsCount = count;
-                            result.HasContent = count > 0;
-                            result.Success = true;
-                            break;
-                        }
+                        string responseBody = httpResult.content;
+                        var httpResponse = httpResult.response;
+                        var statusCode = httpResponse?.StatusCode ?? 0;
 
-                        result.ErrorMessage = "Unsupported response";
-                    }
-                    catch (TaskCanceledException)
-                    {
-                        result.ErrorMessage = "Request timeout";
-                        if (attempt == maxAttempts)
-                            break;
-                    }
-                    catch (HttpRequestException ex)
-                    {
-                        result.ErrorMessage = ex.Message;
-                        if (attempt == maxAttempts)
-                            break;
+                        try
+                        {
+                            result.ErrorMessage = "Unsupported response";
+
+                            if (!string.IsNullOrWhiteSpace(responseBody) &&
+                                TryParseProviderResponse(responseBody, out JToken payload, out string contentType, out int count))
+                            {
+                                result.Payload = payload;
+                                result.ContentType = contentType;
+                                result.ItemsCount = count;
+                                result.HasContent = count > 0;
+                                result.Success = true;
+                                httpResponse?.Dispose();
+                                break;
+                            }
+
+                            if (statusCode == HttpStatusCode.RequestTimeout)
+                                result.ErrorMessage = "Request timeout";
+                            else if (httpResponse != null && string.IsNullOrWhiteSpace(responseBody))
+                                result.ErrorMessage = $"HTTP {(int)statusCode}";
+                            else if (httpResponse == null && string.IsNullOrWhiteSpace(responseBody))
+                                result.ErrorMessage = "Request failed";
+                        }
+                        finally
+                        {
+                            httpResponse?.Dispose();
+                        }
                     }
                     catch (Exception ex)
                     {
                         result.ErrorMessage = ex.Message;
-                        break;
+                        if (attempt == maxAttempts)
+                            break;
                     }
                 }
             }
