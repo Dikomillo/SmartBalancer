@@ -14,33 +14,37 @@ namespace SmartFilter
             get
             {
                 string configPath = "module/SmartFilter/SmartFilter.conf";
+                var lastWriteTime = File.Exists(configPath) ? File.GetLastWriteTime(configPath) : DateTime.MinValue;
+
                 if (cacheconf.Item1 == null)
+                    cacheconf.Item1 = new ModInit();
+
+                if (!File.Exists(configPath))
                 {
-                    if (!File.Exists(configPath))
-                    {
+                    if (cacheconf.Item2 != lastWriteTime)
                         Console.WriteLine($"SmartFilter: Config file {configPath} not found, using defaults");
-                        return new ModInit();
-                    }
+
+                    cacheconf.Item2 = lastWriteTime;
+                    return cacheconf.Item1;
                 }
 
-                var lastWriteTime = File.Exists(configPath) ? File.GetLastWriteTime(configPath) : DateTime.MinValue;
                 if (cacheconf.Item2 != lastWriteTime)
                 {
                     try
                     {
-                        if (File.Exists(configPath))
+                        string json = File.ReadAllText(configPath);
+                        if (!string.IsNullOrEmpty(json))
                         {
-                            string json = File.ReadAllText(configPath);
-                            if (!string.IsNullOrEmpty(json))
-                            {
-                                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                                cacheconf.Item1 = JsonSerializer.Deserialize<ModInit>(json, options);
-                                Console.WriteLine($"SmartFilter: Config loaded from {configPath}");
-                            }
+                            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                            cacheconf.Item1 = JsonSerializer.Deserialize<ModInit>(json, options) ?? new ModInit();
+                            cacheconf.Item1.excludeProviders ??= Array.Empty<string>();
+                            cacheconf.Item1.includeOnlyProviders ??= Array.Empty<string>();
+                            Console.WriteLine($"SmartFilter: Config loaded from {configPath}");
                         }
-
-                        if (cacheconf.Item1 == null)
+                        else
+                        {
                             cacheconf.Item1 = new ModInit();
+                        }
 
                         cacheconf.Item2 = lastWriteTime;
                     }
@@ -97,5 +101,10 @@ namespace SmartFilter
         public int maxRetryAttempts { get; set; } = 3;
         public int retryDelayMs { get; set; } = 1000;
         public bool detailedLogging { get; set; } = true;
+
+        public bool enableSeasonFallback { get; set; } = true;
+        public bool enableEpisodeFallback { get; set; } = true;
+        public bool logDroppedItems { get; set; } = false;
+        public bool preferSingleProviderPassthrough { get; set; } = true;
     }
 }

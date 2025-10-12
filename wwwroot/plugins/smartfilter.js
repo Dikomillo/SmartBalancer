@@ -834,8 +834,6 @@
 
         ensureSFilterIntegration() {
             this.ensureSFilterContainer();
-            this.ensureSFilterButton();
-            this.updateSFilterButtonState();
         },
 
         ensureSFilterContainer() {
@@ -848,54 +846,9 @@
 
             return this.sfilterContainer;
         },
-
         ensureSFilterButton() {
-            const filterBlock = document.querySelector('.filter--filter');
-            if (!filterBlock || !filterBlock.parentElement)
-                return null;
-
-            const parent = filterBlock.parentElement;
-            let button = parent.querySelector('.smartfilter-sfilter-button');
-
-            if (!button) {
-                button = document.createElement('div');
-                button.className = 'simple-button simple-button--filter selector smartfilter-sfilter-button';
-                button.innerHTML = '<span>SFilter</span>';
-                parent.insertBefore(button, filterBlock.nextSibling);
-            }
-
-            button.setAttribute('role', 'button');
-            button.setAttribute('tabindex', '0');
-            button.setAttribute('aria-label', 'Открыть фильтры SmartFilter');
-
-            if (!this.sfilterButtonHandler)
-                this.sfilterButtonHandler = this.onSFilterButtonClick.bind(this);
-
-            if (!this.sfilterButtonHoverHandler)
-                this.sfilterButtonHoverHandler = (event) => this.activateSFilterButton(event);
-
-            if (!this.sfilterButtonKeyHandler)
-                this.sfilterButtonKeyHandler = (event) => {
-                    if (!event)
-                        return;
-
-                    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
-                    const keyCode = event.keyCode || event.which || event.detail;
-                    if (key === 'enter' || key === ' ' || key === 'spacebar' || keyCode === 13 || keyCode === 32) {
-                        event.preventDefault();
-                        this.activateSFilterButton(event);
-                    }
-                };
-
-            if (!button.__smartfilterSFilterBound) {
-                button.addEventListener('click', this.sfilterButtonHandler);
-                button.addEventListener('hover:enter', this.sfilterButtonHoverHandler);
-                button.addEventListener('keydown', this.sfilterButtonKeyHandler);
-                button.__smartfilterSFilterBound = true;
-            }
-
-            this.sfilterButton = button;
-            return button;
+            this.sfilterButton = null;
+            return null;
         },
 
         onSFilterButtonClick(event) {
@@ -1093,8 +1046,14 @@
             else
                 this.ensureSFilterContainer();
 
-            if (options.reset)
-                this.resetSFilterState();
+            if (options.reset) {
+                this.cachedData = null;
+                this.cachedItems = [];
+                this.cachedMetadata = null;
+                this.seriesState = null;
+                this.sfilterItems = [];
+                return;
+            }
 
             if (options.cachedData && typeof options.cachedData === 'object')
                 this.cachedData = options.cachedData;
@@ -1104,23 +1063,12 @@
 
             if (options.metadata && typeof options.metadata === 'object')
                 this.cachedMetadata = options.metadata;
-            else if (options.reset)
-                this.cachedMetadata = null;
 
-            if (options.series === null)
-                this.seriesState = null;
-            else if (options.series && typeof options.series === 'object')
+            if (options.series && typeof options.series === 'object')
                 this.seriesState = options.series;
 
-            if (Array.isArray(items)) {
+            if (Array.isArray(items))
                 this.sfilterItems = items.filter((item) => item && typeof item === 'object');
-                this.clearSFilterFilters();
-            } else if (!options.reset) {
-                this.sfilterItems = [];
-            }
-
-            this.ensureSFilterButton();
-            this.updateSFilterButtonState();
         },
 
         resetSFilterState() {
@@ -3096,3 +3044,4 @@
     if (window && typeof window === 'object')
         window.SmartFilter = SmartFilter;
 })(typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this));
+
