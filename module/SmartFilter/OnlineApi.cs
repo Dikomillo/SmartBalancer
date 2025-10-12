@@ -22,13 +22,47 @@ namespace SmartFilter
                 return new List<(string name, string url, string plugin, int index)>();  
             }  
   
-            var results = new List<(string name, string url, string plugin, int index)>();  
-            var url = $"{host}/lite/smartfilter";  
-              
-            results.Add(("SmartFilter Aggregator", url, "smartfilter", 0));  
-              
-            Console.WriteLine($"📡 SmartFilter: Registered provider at {url}");  
-            return results;  
-        }  
-    }  
+            var results = new List<(string name, string url, string plugin, int index)>();
+
+            var url = $"{host}/lite/smartfilter";
+            var token = ResolveToken(requestInfo, httpContext);
+
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                var separator = url.Contains('?') ? "&" : "?";
+                url = $"{url}{separator}token={Uri.EscapeDataString(token)}";
+            }
+
+            results.Add(("SmartFilter Aggregator", url, "smartfilter", 0));
+
+            Console.WriteLine($"📡 SmartFilter: Registered provider at {url}");
+            return results;
+        }
+
+        private static string ResolveToken(RequestModel requestInfo, HttpContext httpContext)
+        {
+            string token = null;
+
+            if (requestInfo != null)
+            {
+                var type = requestInfo.GetType();
+                var property = type.GetProperty("token") ?? type.GetProperty("Token");
+                token = property?.GetValue(requestInfo) as string;
+
+                if (string.IsNullOrWhiteSpace(token))
+                {
+                    var field = type.GetField("token") ?? type.GetField("Token");
+                    token = field?.GetValue(requestInfo) as string;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(token))
+                token = httpContext?.Request?.Query["token"].ToString();
+
+            if (string.IsNullOrWhiteSpace(token))
+                token = httpContext?.Request?.Headers["token"].ToString();
+
+            return string.IsNullOrWhiteSpace(token) ? null : token;
+        }
+    }
 }
