@@ -15,6 +15,8 @@
         legacyObserverInterval: null,
         cachedData: null,
         cachedItems: null,
+        cachedMetadata: null,
+        seriesState: null,
         metadata: null,
         metadataTtl: 5 * 60 * 1000,
         metadataScanLimit: 2000,
@@ -704,20 +706,29 @@
                 .smartfilter-chip {
                     display: inline-flex;
                     align-items: center;
-                    padding: 6px 10px;
-                    border-radius: 20px;
-                    background: rgba(255, 255, 255, 0.08);
+                    padding: 6px 12px;
                     margin: 4px;
+                    border-radius: 20px;
+                    border: 0;
+                    background: rgba(255, 255, 255, 0.08);
+                    color: inherit;
+                    font: inherit;
                     cursor: pointer;
-                    transition: background 0.2s ease;
+                    transition: background 0.2s ease, transform 0.15s ease;
+                }
+
+                .smartfilter-chip:focus {
+                    outline: none;
+                }
+
+                .smartfilter-chip:focus-visible {
+                    outline: 2px solid rgba(76, 175, 80, 0.65);
+                    outline-offset: 2px;
                 }
 
                 .smartfilter-chip.active {
                     background: #4CAF50;
-                }
-
-                .smartfilter-chip input {
-                    margin-right: 6px;
+                    transform: translateY(-1px);
                 }
 
                 .smartfilter-source-highlight {
@@ -778,7 +789,7 @@
 
                 const container = document.querySelector('[data-smartfilter="true"]');
                 if (container || (this.cachedItems && this.cachedItems.length))
-                    this.notifySFilterModule(this.cachedItems || [], { ensureButton: true, container });
+                    this.notifySFilterModule(this.cachedItems || [], { ensureButton: true, container, metadata: this.cachedMetadata });
             };
 
             if (typeof MutationObserver === 'function') {
@@ -974,16 +985,28 @@
                 if (!data)
                     return [];
 
-                const items = this.flattenItems(data);
-                if (Array.isArray(items) && items.length && (!Array.isArray(this.sfilterItems) || !this.sfilterItems.length)) {
-                    const container = this.ensureSFilterContainer();
-                    this.notifySFilterModule(items, {
-                        ensureButton: true,
-                        container,
-                        cachedData: data,
-                        cachedItems: items
-                    });
-                }
+                const dataset = this.normalizeSeriesDataset(data);
+                let items = [];
+
+                if (dataset && Array.isArray(dataset.items))
+                    items = dataset.items.slice();
+
+                if (!items.length)
+                    items = this.flattenItems(data);
+
+                if (!Array.isArray(items))
+                    items = [];
+
+                const container = this.ensureSFilterContainer();
+                this.notifySFilterModule(items, {
+                    ensureButton: true,
+                    container,
+                    cachedData: data,
+                    cachedItems: items,
+                    series: dataset,
+                    metadata: data && data.metadata ? data.metadata : this.cachedMetadata
+                });
+
                 return items;
             };
 
@@ -1050,7 +1073,10 @@
             if (!button)
                 return;
 
-            const enabled = Array.isArray(this.sfilterItems) && this.sfilterItems.length;
+            const options = this.collectSFilterOptions();
+            const hasVoices = options && Array.isArray(options.voices) && options.voices.length > 0;
+            const hasQualities = options && Array.isArray(options.qualities) && options.qualities.length > 0;
+            const enabled = hasVoices || hasQualities;
 
             if (enabled) {
                 this.addClass(button, 'enabled');
@@ -1076,6 +1102,16 @@
             if (Array.isArray(options.cachedItems))
                 this.cachedItems = options.cachedItems.slice();
 
+            if (options.metadata && typeof options.metadata === 'object')
+                this.cachedMetadata = options.metadata;
+            else if (options.reset)
+                this.cachedMetadata = null;
+
+            if (options.series === null)
+                this.seriesState = null;
+            else if (options.series && typeof options.series === 'object')
+                this.seriesState = options.series;
+
             if (Array.isArray(items)) {
                 this.sfilterItems = items.filter((item) => item && typeof item === 'object');
                 this.clearSFilterFilters();
@@ -1090,6 +1126,7 @@
         resetSFilterState() {
             this.closeSFilterModal();
             this.sfilterItems = [];
+            this.seriesState = null;
             this.clearSFilterFilters();
         },
 
@@ -1114,153 +1151,120 @@
         },
 
         collectSFilterOptions() {
-            const voices = [];
-            const voiceSeen = Object.create(null);
-            const qualities = [];
-            const qualitySeen = Object.create(null);
-            const visitedVoices = typeof WeakSet === 'function' ? new WeakSet() : null;
-            const visitedQualities = typeof WeakSet === 'function' ? new WeakSet() : null;
-
-            const addVoice = (value) => {
-                const label = this.normalizeVoiceLabel(value);
-                const normalized = this.normalizeFilterText(label);
-                if (!normalized || voiceSeen[normalized])
-                    return;
-
-                voiceSeen[normalized] = true;
-                voices.push(label);
-            };
-
-            const addQuality = (value) => {
-                if (value === null || value === undefined)
-                    return;
-
-                const label = String(value).trim();
-                const normalized = this.normalizeFilterText(label);
-                if (!normalized || qualitySeen[normalized])
-                    return;
-
-                qualitySeen[normalized] = true;
-                qualities.push(label);
-            };
-
-            const addVoiceCandidate = (value) => {
-                if (value === null || value === undefined)
-                    return;
-
-                if (Array.isArray(value)) {
-                    value.forEach(addVoiceCandidate);
-                    return;
-                }
-
-                if (typeof value === 'object') {
-                    if (visitedVoices && visitedVoices.has(value))
-                        return;
-
-                    if (visitedVoices)
-                        visitedVoices.add(value);
-
-                    addVoiceCandidate(value.translate || value.voice || value.voice_name || value.voiceName || value.name || value.title || value.label);
-                    if (Array.isArray(value.list))
-                        value.list.forEach(addVoiceCandidate);
-                    if (Array.isArray(value.items))
-                        value.items.forEach(addVoiceCandidate);
-                    return;
-                }
-
-                addVoice(value);
-            };
-
-            const addQualityCandidate = (value) => {
-                if (value === null || value === undefined)
-                    return;
-
-                if (Array.isArray(value)) {
-                    value.forEach(addQualityCandidate);
-                    return;
-                }
-
-                if (typeof value === 'object') {
-                    if (visitedQualities && visitedQualities.has(value))
-                        return;
-
-                    if (visitedQualities)
-                        visitedQualities.add(value);
-
-                    addQualityCandidate(value.maxquality || value.quality || value.quality_name || value.qualityName || value.label);
-                    return;
-                }
-
-                addQuality(value);
-            };
-
-            const collectFromItem = (item) => {
-                if (!item || typeof item !== 'object') {
-                    addVoiceCandidate(item);
-                    addQualityCandidate(item);
-                    return;
-                }
-
-                if ((visitedVoices && visitedVoices.has(item)) && (visitedQualities && visitedQualities.has(item)))
-                    return;
-
-                if (visitedVoices && !visitedVoices.has(item))
-                    visitedVoices.add(item);
-                if (visitedQualities && !visitedQualities.has(item))
-                    visitedQualities.add(item);
-
-                addVoiceCandidate(item.translate);
-                addVoiceCandidate(item.voice);
-                addVoiceCandidate(item.voice_name);
-                addVoiceCandidate(item.voiceName);
-                addVoiceCandidate(item.voice_list);
-                addVoiceCandidate(item.translation);
-                addVoiceCandidate(item.author);
-                addVoiceCandidate(item.dub);
-
-                addQualityCandidate(item.maxquality);
-                addQualityCandidate(item.maxQuality);
-                addQualityCandidate(item.quality);
-                addQualityCandidate(item.quality_label);
-                addQualityCandidate(item.qualityName);
-                addQualityCandidate(item.video_quality);
-                addQualityCandidate(item.source_quality);
-                addQualityCandidate(item.hd);
-
-                const nestedKeys = ['items', 'results', 'playlist', 'list', 'translations', 'children'];
-                nestedKeys.forEach((key) => {
-                    const nested = item[key];
-                    if (Array.isArray(nested))
-                        nested.forEach(collectFromItem);
-                    else if (nested && typeof nested === 'object')
-                        collectFromItem(nested);
-                });
-            };
-
-            (this.sfilterItems || []).forEach(collectFromItem);
-            (this.cachedItems || []).forEach(collectFromItem);
-
-            const cached = this.cachedData;
-            if (cached && typeof cached === 'object') {
-                addVoiceCandidate(cached.voice || cached.voices);
-                addVoiceCandidate(cached.translations);
-                addQualityCandidate(cached.maxquality);
-                addQualityCandidate(cached.quality);
-
-                const pools = ['results', 'items', 'playlist', 'list'];
-                pools.forEach((key) => {
-                    const value = cached[key];
-                    if (Array.isArray(value))
-                        value.forEach(collectFromItem);
-                });
-
-                if (cached.options && typeof cached.options === 'object') {
-                    addVoiceCandidate(cached.options.voices);
-                    addQualityCandidate(cached.options.qualities);
-                }
+            if (this.cachedMetadata && typeof this.cachedMetadata === 'object') {
+                const metaOptions = this.extractOptionsFromMetadata(this.cachedMetadata);
+                if (metaOptions)
+                    return metaOptions;
             }
 
+            if (this.seriesState && typeof this.seriesState === 'object') {
+                const seriesVoices = Array.isArray(this.seriesState.voices) ? this.seriesState.voices.slice() : [];
+                const seriesQualities = Array.isArray(this.seriesState.qualities) ? this.seriesState.qualities.slice() : [];
+
+                if (seriesVoices.length || seriesQualities.length)
+                    return { voices: seriesVoices, qualities: seriesQualities };
+            }
+
+            const options = this.extractOptionsFromMetadata({
+                voices: this.buildFacetMapFromItems(this.sfilterItems, 'voice'),
+                qualities: this.buildFacetMapFromItems(this.sfilterItems, 'quality')
+            });
+
+            return options || { voices: [], qualities: [] };
+        },
+
+        extractOptionsFromMetadata(metadata) {
+            if (!metadata || typeof metadata !== 'object')
+                return null;
+
+            const voices = this.buildFacetArray(metadata.voices || metadata.Voices, 'voice');
+            const qualities = this.buildFacetArray(metadata.qualities || metadata.Qualities, 'quality');
+
+            if (!voices.length && !qualities.length)
+                return null;
+
             return { voices, qualities };
+        },
+
+        buildFacetMapFromItems(items, kind) {
+            const map = {};
+            const source = Array.isArray(items) ? items : [];
+            source.forEach((item) => {
+                if (!item || typeof item !== 'object')
+                    return;
+
+                if (kind === 'voice') {
+                    const label = this.normalizeVoiceLabel(item.voice_label || item.voice || item.translation || item.details);
+                    if (!label)
+                        return;
+                    const key = this.normalizeFilterText(label) || label;
+                    const entry = map[key] || { label, count: 0 };
+                    entry.count += 1;
+                    map[key] = entry;
+                } else if (kind === 'quality') {
+                    const label = this.normalizeQualityLabel(item.quality_label || item.quality || item.maxquality);
+                    if (!label)
+                        return;
+                    const key = this.normalizeFilterText(label) || label;
+                    const entry = map[key] || { label, count: 0 };
+                    entry.count += 1;
+                    map[key] = entry;
+                }
+            });
+            return map;
+        },
+
+        buildFacetArray(map, type) {
+            if (!map || typeof map !== 'object')
+                return [];
+
+            const entries = [];
+            Object.keys(map).forEach((key) => {
+                const facet = map[key];
+                if (!facet || typeof facet !== 'object')
+                    return;
+
+                const label = this.normalizeText(facet.label || facet.Label);
+                if (!label)
+                    return;
+
+                const code = this.normalizeText(facet.code || facet.Code);
+                const countRaw = facet.count != null ? facet.count : facet.Count;
+                const count = Number.isFinite(countRaw) ? Number(countRaw) : Number.parseInt(countRaw, 10);
+                entries.push({ code, label, count: Number.isFinite(count) ? count : 0 });
+            });
+
+            if (!entries.length)
+                return [];
+
+            if (type === 'quality')
+                entries.sort((a, b) => this.scoreQualityFacet(b.code || b.label) - this.scoreQualityFacet(a.code || a.label));
+            else
+                entries.sort((a, b) => a.label.localeCompare(b.label));
+
+            return entries.map((entry) => entry.count > 0 ? `${entry.label} (${entry.count})` : entry.label);
+        },
+
+        scoreQualityFacet(value) {
+            if (!value)
+                return -1;
+
+            const normalized = value.toString().toLowerCase();
+            if (normalized.includes('2160'))
+                return 6;
+            if (normalized.includes('1440'))
+                return 5;
+            if (normalized.includes('1080'))
+                return 4;
+            if (normalized.includes('720'))
+                return 3;
+            if (normalized.includes('480'))
+                return 2;
+            if (normalized.includes('360'))
+                return 1;
+            if (normalized.includes('cam'))
+                return 0;
+            return 0;
         },
 
         normalizeFilterText(value) {
@@ -1271,6 +1275,64 @@
                 .trim()
                 .replace(/\s+/g, ' ')
                 .toLowerCase();
+        },
+
+        normalizeQualityLabel(value) {
+            if (value === null || value === undefined)
+                return '';
+
+            if (Array.isArray(value))
+                return this.normalizeQualityLabel(value[0]);
+
+            if (typeof value === 'object')
+                return this.normalizeQualityLabel(value.label || value.name || value.title || value.quality || value.maxquality || value.maxQuality);
+
+            const text = String(value).trim();
+            if (!text)
+                return '';
+
+            const normalized = this.normalizeFilterText(text);
+            if (!normalized)
+                return '';
+
+            const map = {
+                'uhd': '2160p',
+                '4k': '2160p',
+                '2160p': '2160p',
+                '1440p': '1440p',
+                '1080p': '1080p',
+                'fullhd': '1080p',
+                'full hd': '1080p',
+                'fhd': '1080p',
+                '720p': '720p',
+                'hd': '720p',
+                'hdrip': 'HDRip',
+                '480p': '480p',
+                'sd': '480p',
+                '360p': '360p',
+                'camrip': 'CAMRip',
+                'camrip hd': 'CAMRip',
+                'cam-rip': 'CAMRip',
+                'cam': 'CAMRip',
+                'ts': 'TS',
+                'telesync': 'TS',
+                'dvdrip': 'DVDRip',
+                'webrip': 'WEBRip',
+                'web-rip': 'WEBRip',
+                'webdl': 'WEB-DL',
+                'web-dl': 'WEB-DL',
+                'bdrip': 'BDRip',
+                'bdr': 'BDRip'
+            };
+
+            if (Object.prototype.hasOwnProperty.call(map, normalized))
+                return map[normalized];
+
+            const match = normalized.match(/(\d{3,4}p)/);
+            if (match && match[1])
+                return match[1];
+
+            return text;
         },
 
         normalizeVoiceLabel(value) {
@@ -1305,14 +1367,15 @@
                 ? qualityFilters.map((quality) => this.normalizeFilterText(quality)).filter(Boolean)
                 : [];
 
-            const voiceValue = payload.translate || payload.voice || payload.voice_name || payload.voiceName || payload.translation || payload.dub;
+            const voiceValue = payload.smartfilterVoice || payload.translate || payload.voice || payload.voice_name || payload.voiceName || payload.translation || payload.dub;
             const voiceLabel = this.normalizeVoiceLabel(voiceValue);
             const normalizedVoice = this.normalizeFilterText(voiceLabel);
             const hasVoiceFilters = normalizedVoices.length > 0;
             const voiceMatch = !hasVoiceFilters || normalizedVoices.includes(normalizedVoice);
 
-            const qualityValue = payload.maxquality || payload.maxQuality || payload.quality || payload.quality_label || payload.qualityName || payload.video_quality || payload.source_quality || payload.hd;
-            const normalizedQuality = this.normalizeFilterText(qualityValue);
+            const qualityValue = payload.smartfilterQuality || payload.maxquality || payload.maxQuality || payload.quality || payload.quality_label || payload.qualityName || payload.video_quality || payload.source_quality || payload.hd;
+            const qualityLabel = this.normalizeQualityLabel(qualityValue);
+            const normalizedQuality = this.normalizeFilterText(qualityLabel);
             const hasQualityFilters = normalizedQualities.length > 0;
             const qualityMatch = !hasQualityFilters || !normalizedQuality || normalizedQualities.includes(normalizedQuality);
 
@@ -1615,10 +1678,7 @@
 
         createSFilterChip(type, value) {
             const safeValue = value !== null && value !== undefined ? String(value) : '';
-            return `<label class="smartfilter-chip" data-type="${type}" data-value="${this.escapeHtml(safeValue)}">
-                <input type="checkbox" />
-                <span>${this.escapeHtml(safeValue)}</span>
-            </label>`;
+            return `<button type="button" class="smartfilter-chip" data-type="${type}" data-value="${this.escapeHtml(safeValue)}">${this.escapeHtml(safeValue)}</button>`;
         },
 
         hookXHR() {
@@ -1773,6 +1833,7 @@
             this.progressKey = info.progressKey;
             this.cachedData = null;
             this.cachedItems = null;
+            this.cachedMetadata = null;
             this.lastProgressState = null;
             this.progressReady = false;
             this.cancelAutoClose();
@@ -1795,14 +1856,16 @@
                 if (!data)
                     return;
 
-                const flattened = this.flattenItems(data);
+                const flattened = this.flattenItems(data.results || data);
                 this.cachedData = data;
                 this.cachedItems = flattened;
+                this.cachedMetadata = data.metadata || null;
                 const container = document.querySelector('[data-smartfilter="true"]');
-                this.notifySFilterModule(flattened, { ensureButton: true, container });
+                this.notifySFilterModule(flattened, { ensureButton: true, container, metadata: this.cachedMetadata });
             } catch (err) {
                 this.cachedData = null;
                 this.cachedItems = null;
+                this.cachedMetadata = null;
                 this.notifySFilterModule([], { reset: true, ensureButton: true, container: document.querySelector('[data-smartfilter="true"]') });
             }
         },
@@ -1851,14 +1914,16 @@
                 if (!data)
                     return;
 
-                const flattened = this.flattenItems(data);
+                const flattened = this.flattenItems(data.results || data);
                 this.cachedData = data;
                 this.cachedItems = flattened;
+                this.cachedMetadata = data.metadata || null;
                 const container = document.querySelector('[data-smartfilter="true"]');
-                this.notifySFilterModule(flattened, { ensureButton: true, container, cachedData: data, cachedItems: flattened });
+                this.notifySFilterModule(flattened, { ensureButton: true, container, cachedData: data, cachedItems: flattened, metadata: this.cachedMetadata });
             }).catch(() => {
                 this.cachedData = null;
                 this.cachedItems = null;
+                this.cachedMetadata = null;
                 const container = document.querySelector('[data-smartfilter="true"]');
                 this.notifySFilterModule([], { reset: true, ensureButton: true, container });
             });
@@ -1869,6 +1934,7 @@
             this.hideProgress(true);
             this.cachedData = null;
             this.cachedItems = null;
+            this.cachedMetadata = null;
             const container = document.querySelector('[data-smartfilter="true"]');
             this.notifySFilterModule([], { reset: true, ensureButton: true, container });
         },
@@ -1953,6 +2019,348 @@
             });
 
             return aggregated;
+        },
+
+        normalizeSeriesDataset(payload) {
+            const container = this.extractSeriesContainer(payload);
+            if (!container)
+                return null;
+
+            const dataset = {
+                hasSeries: false,
+                items: [],
+                seasons: [],
+                episodes: [],
+                grouped: null,
+                voices: [],
+                qualities: [],
+                maxQuality: null
+            };
+
+            const normalizedSeasons = [];
+            const seasonSeenGlobal = Object.create(null);
+            const groupedSeasons = typeof container.groupedSeasons === 'object' && container.groupedSeasons ? container.groupedSeasons : null;
+
+            if (groupedSeasons) {
+                const groups = {};
+                Object.keys(groupedSeasons).forEach((key) => {
+                    const label = typeof key === 'string' && key ? key : 'default';
+                    const list = groupedSeasons[key];
+                    if (!Array.isArray(list) || !list.length)
+                        return;
+
+                    const normalizedGroup = [];
+                    list.forEach((item) => {
+                        const normalized = this.normalizeSeriesItem(item);
+                        const uniqueKey = this.buildSeriesItemKey(normalized);
+                        if (normalized && !seasonSeenGlobal[uniqueKey]) {
+                            seasonSeenGlobal[uniqueKey] = true;
+                            normalizedGroup.push(normalized);
+                        }
+                    });
+
+                    if (normalizedGroup.length)
+                        groups[label] = normalizedGroup;
+                });
+
+                const groupKeys = Object.keys(groups);
+                if (groupKeys.length) {
+                    dataset.grouped = groups;
+                    groupKeys.forEach((key) => {
+                        const entries = groups[key];
+                        for (let index = 0; index < entries.length; index += 1)
+                            normalizedSeasons.push(entries[index]);
+                    });
+                }
+            }
+
+            const seasonList = Array.isArray(container.seasons) ? container.seasons : null;
+            if (seasonList && seasonList.length) {
+                seasonList.forEach((item) => {
+                    const normalized = this.normalizeSeriesItem(item);
+                    if (!normalized)
+                        return;
+
+                    const uniqueKey = this.buildSeriesItemKey(normalized);
+                    if (seasonSeenGlobal[uniqueKey])
+                        return;
+
+                    seasonSeenGlobal[uniqueKey] = true;
+
+                    normalizedSeasons.push(normalized);
+                });
+            }
+
+            const normalizedEpisodes = [];
+            const episodeList = Array.isArray(container.episodes) ? container.episodes : null;
+            if (episodeList && episodeList.length) {
+                const episodeSeen = Object.create(null);
+                episodeList.forEach((item) => {
+                    const normalized = this.normalizeSeriesItem(item);
+                    if (!normalized)
+                        return;
+
+                    const uniqueKey = this.buildSeriesItemKey(normalized);
+                    if (episodeSeen[uniqueKey])
+                        return;
+
+                    episodeSeen[uniqueKey] = true;
+                    normalizedEpisodes.push(normalized);
+                });
+            }
+
+            dataset.seasons = normalizedSeasons;
+            dataset.episodes = normalizedEpisodes;
+            dataset.items = normalizedSeasons.concat(normalizedEpisodes);
+            dataset.hasSeries = dataset.items.length > 0;
+
+            const sourceMaxQuality = container.maxquality || container.maxQuality || payload.maxquality || payload.maxQuality;
+            if (sourceMaxQuality)
+                dataset.maxQuality = sourceMaxQuality;
+
+            dataset.voices = this.collectSeriesVoices(dataset.items, container.voice || container.voices || container.voice_list || container.translations || payload.voice || payload.voices || payload.voice_list || payload.translations);
+            dataset.qualities = this.collectSeriesQualities(dataset.items, dataset.maxQuality, payload);
+
+            if (Array.isArray(dataset.voices))
+                dataset.voices.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+            dataset.qualities = this.sortQualityOptions(dataset.qualities);
+
+            return dataset;
+        },
+
+        extractSeriesContainer(payload) {
+            if (!payload || typeof payload !== 'object')
+                return null;
+
+            const stack = [payload];
+            const seen = typeof WeakSet === 'function' ? new WeakSet() : null;
+
+            while (stack.length) {
+                const current = stack.pop();
+                if (!current || typeof current !== 'object')
+                    continue;
+
+                if (seen) {
+                    if (seen.has(current))
+                        continue;
+                    seen.add(current);
+                }
+
+                if (Array.isArray(current)) {
+                    for (let index = 0; index < current.length; index += 1)
+                        stack.push(current[index]);
+                    continue;
+                }
+
+                const seasons = current.seasons || current.Seasons;
+                const episodes = current.episodes || current.Episodes;
+                const grouped = current.groupedSeasons || current.grouped || current.providers;
+
+                if ((Array.isArray(seasons) && seasons.length) || (Array.isArray(episodes) && episodes.length) || (grouped && typeof grouped === 'object' && Object.keys(grouped).length))
+                    return current;
+
+                const keys = ['data', 'results', 'items', 'playlist', 'playlists', 'children', 'list', 'series', 'content'];
+                for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+                    const key = keys[keyIndex];
+                    if (current[key] !== undefined)
+                        stack.push(current[key]);
+                }
+            }
+
+            return null;
+        },
+
+        normalizeSeriesItem(source) {
+            if (!source || typeof source !== 'object')
+                return null;
+
+            const item = Object.assign({}, source);
+
+            if (!item.type) {
+                if (item.episode !== undefined || item.e !== undefined)
+                    item.type = 'episode';
+                else
+                    item.type = 'season';
+            }
+
+            if (!item.title && item.name)
+                item.title = item.name;
+
+            if (!item.voice && item.translate)
+                item.voice = item.translate;
+
+            const qualityCandidate = Array.isArray(item.quality) ? item.quality[0] : (item.quality || item.maxquality || item.maxQuality);
+            const normalizedQuality = this.normalizeQualityLabel(qualityCandidate);
+            if (normalizedQuality && !item.maxquality)
+                item.maxquality = normalizedQuality;
+            if (normalizedQuality)
+                item.smartfilterQuality = normalizedQuality;
+
+            const voiceLabel = this.normalizeVoiceLabel(item.voice || item.translate || item.voice_name || item.voiceName);
+            if (voiceLabel)
+                item.smartfilterVoice = voiceLabel;
+
+            return item;
+        },
+
+        buildSeriesItemKey(item) {
+            if (!item || typeof item !== 'object')
+                return '';
+
+            const parts = [];
+
+            if (item.provider)
+                parts.push(String(item.provider).toLowerCase());
+
+            if (item.type)
+                parts.push(String(item.type).toLowerCase());
+
+            if (item.season !== undefined)
+                parts.push(`s${item.season}`);
+
+            if (item.episode !== undefined)
+                parts.push(`e${item.episode}`);
+
+            const voice = item.smartfilterVoice || item.voice || item.translate || item.voice_name || item.voiceName;
+            if (voice)
+                parts.push(this.normalizeFilterText(voice));
+
+            if (item.url)
+                parts.push(String(item.url).toLowerCase());
+
+            return parts.join('|');
+        },
+
+        collectSeriesVoices(items, voiceSource) {
+            const voices = [];
+            const seen = Object.create(null);
+
+            const pushVoice = (value) => {
+                const label = this.normalizeVoiceLabel(value);
+                const normalized = this.normalizeFilterText(label);
+                if (!normalized || seen[normalized])
+                    return;
+                seen[normalized] = true;
+                voices.push(label);
+            };
+
+            const visit = (value) => {
+                if (value === null || value === undefined)
+                    return;
+
+                if (Array.isArray(value)) {
+                    value.forEach(visit);
+                    return;
+                }
+
+                if (typeof value === 'object') {
+                    pushVoice(value.name || value.title || value.label || value.translate || value.voice || value.voice_name || value.voiceName);
+                    if (Array.isArray(value.list))
+                        value.list.forEach(visit);
+                    if (Array.isArray(value.items))
+                        value.items.forEach(visit);
+                    return;
+                }
+
+                pushVoice(value);
+            };
+
+            if (voiceSource !== undefined)
+                visit(voiceSource);
+
+            (Array.isArray(items) ? items : []).forEach((item) => {
+                if (!item || typeof item !== 'object')
+                    return;
+                pushVoice(item.smartfilterVoice || item.voice || item.translate || item.voice_name || item.voiceName);
+            });
+
+            return voices;
+        },
+
+        collectSeriesQualities(items, maxQuality, payload) {
+            const qualities = [];
+            const seen = Object.create(null);
+
+            const pushQuality = (value) => {
+                const label = this.normalizeQualityLabel(value);
+                const normalized = this.normalizeFilterText(label);
+                if (!normalized || seen[normalized])
+                    return;
+                seen[normalized] = true;
+                qualities.push(label);
+            };
+
+            const visit = (value) => {
+                if (value === null || value === undefined)
+                    return;
+
+                if (Array.isArray(value)) {
+                    value.forEach(visit);
+                    return;
+                }
+
+                if (typeof value === 'object') {
+                    visit(value.maxquality || value.maxQuality || value.quality || value.label || value.name);
+                    if (Array.isArray(value.list))
+                        value.list.forEach(visit);
+                    if (Array.isArray(value.items))
+                        value.items.forEach(visit);
+                    return;
+                }
+
+                pushQuality(value);
+            };
+
+            if (maxQuality)
+                pushQuality(maxQuality);
+
+            (Array.isArray(items) ? items : []).forEach((item) => {
+                if (!item || typeof item !== 'object')
+                    return;
+                visit(item.smartfilterQuality || item.maxquality || item.maxQuality || item.quality);
+            });
+
+            if (payload && typeof payload === 'object')
+                visit(payload.quality || payload.qualities || payload.maxquality || payload.maxQuality);
+
+            return qualities;
+        },
+
+        sortQualityOptions(list) {
+            if (!Array.isArray(list))
+                return [];
+
+            const priorities = {
+                '2160p': 90,
+                '1440p': 80,
+                '1080p': 70,
+                'web-dl': 65,
+                'webrip': 60,
+                'hdrip': 55,
+                '720p': 50,
+                'web': 45,
+                '480p': 40,
+                'sd': 35,
+                '360p': 30,
+                'camrip': 20,
+                'ts': 10
+            };
+
+            const items = list.slice();
+            items.sort((a, b) => {
+                const normalizedA = this.normalizeFilterText(a);
+                const normalizedB = this.normalizeFilterText(b);
+                const scoreA = Object.prototype.hasOwnProperty.call(priorities, normalizedA) ? priorities[normalizedA] : 0;
+                const scoreB = Object.prototype.hasOwnProperty.call(priorities, normalizedB) ? priorities[normalizedB] : 0;
+
+                if (scoreA === scoreB)
+                    return a.localeCompare(b, undefined, { sensitivity: 'base' });
+
+                return scoreB - scoreA;
+            });
+
+            return items;
         },
 
         getFreshMetadata() {
