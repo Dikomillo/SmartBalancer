@@ -114,15 +114,22 @@ namespace SmartFilter
 
                     if (isSeries)
                     {
-                        var (seriesData, voiceData, quality) = SeriesDataHelper.Unpack(aggregation.Data);
-                        responseObject["data"] = seriesData.DeepClone();
-                        responseObject["results"] = seriesData.DeepClone();
+                        var seriesPayload = SeriesDataHelper.Extract(aggregation.Type, aggregation.Data);
+                        responseObject["data"] = seriesPayload.Items.DeepClone();
 
-                        if (voiceData != null)
-                            responseObject["voice"] = voiceData.DeepClone();
+                        var seriesResults = seriesPayload.Container != null && seriesPayload.Container.HasValues
+                            ? (JToken)seriesPayload.Container
+                            : seriesPayload.Items;
+                        responseObject["results"] = seriesResults.DeepClone();
 
-                        if (!string.IsNullOrWhiteSpace(quality))
-                            responseObject["maxquality"] = quality;
+                        if (seriesPayload.Voice != null)
+                            responseObject["voice"] = seriesPayload.Voice.DeepClone();
+
+                        if (!string.IsNullOrWhiteSpace(seriesPayload.MaxQuality))
+                            responseObject["maxquality"] = seriesPayload.MaxQuality;
+
+                        if (seriesPayload.Metadata != null)
+                            responseObject["metadata"] = seriesPayload.Metadata.DeepClone();
                     }
                     else
                     {

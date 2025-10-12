@@ -23,12 +23,12 @@ namespace SmartFilter
 
             if (isSeason || isEpisode)
             {
-                var (seriesData, voiceData, quality) = SeriesDataHelper.Unpack(data);
-                data = seriesData;
-                maxQuality = quality;
+                var seriesPayload = SeriesDataHelper.Extract(type, data);
+                data = seriesPayload.Items;
+                maxQuality = seriesPayload.MaxQuality;
 
-                if (voiceData != null && voiceData.Count > 0)
-                    voiceHtml = BuildVoiceHtml(voiceData);
+                if (seriesPayload.Voice != null && seriesPayload.Voice.Count > 0)
+                    voiceHtml = BuildVoiceHtml(seriesPayload.Voice);
             }
 
             if (data is JObject grouped)
