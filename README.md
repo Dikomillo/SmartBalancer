@@ -628,3 +628,200 @@
             string online_result = string.Join(",", online.OrderBy(i => i.index).Select(i => "{\"name\":\"" + i.name + "\",\"url\":\"" + i.url + "\",\"balanser\":\"" + i.plugin + "\"}"));
             return ContentTo($"[{online_result.Replace("{localhost}", host)}]");
 ```
+# Как устроено кеширование в Lampac
+
+Система кеширования в Lampac построена на двух уровнях: **HybridCache** (память + диск) и **MemoryCache** (только память), с использованием семафоров для предотвращения дублирующих запросов. [1](#1-0) 
+
+## Основной метод InvokeCache
+
+Метод `InvokeCache<T>()` является центральным компонентом кеширования [2](#1-1) :
+
+1. **Семафор для дедупликации** - использует `_semaphoreLocks` для предотвращения параллельных запросов с одинаковым ключом [3](#1-2) 
+2. **Проверка кеша** - сначала проверяет `hybridCache.TryGetValue()`, если данные есть - возвращает их с заголовком `X-Invoke-Cache: HIT` [4](#1-3) 
+3. **Выполнение запроса** - если данных нет, выполняет `onget.Invoke()` и сохраняет результат [5](#1-4) 
+4. **Освобождение семафора** - в блоке `finally` освобождает семафор и удаляет его из словаря, если больше нет ожидающих [6](#1-5) 
+
+## Структура ключей кеша
+
+Каждый провайдер использует свою схему ключей:
+
+**Примеры из контроллеров:**
+- Rezka: `rezka:view:serial:{id}:{t}` для сериалов [7](#1-6) 
+- Rezka: `rezka:movie:{voice}:{realip}:{cookie}` для фильмов [8](#1-7) 
+- VideoDB: `videodb:view:{kinopoisk_id}` для контента<cite />
+- VDBmovies: `vdbmovies:{orid}:{kinopoisk_id}` с учетом IP через `rch.ipkey()` [9](#1-8) 
+
+## Время жизни кеша
+
+Метод `cacheTime()` определяет длительность кеширования с учетом различных факторов<cite />:
+
+**Типичные значения:**
+- Поиск: 40 минут [10](#1-9) 
+- Контент сериалов: 20 минут [7](#1-6) 
+- Видео ссылки: 10-20 минут<cite />
+- Ошибки: 20 секунд (только в multiaccess режиме)<cite />
+
+## Интеграция с RCH
+
+При использовании Remote Client Hub ключи кеша включают IP удаленного клиента через метод `rch.ipkey()` [9](#1-8) . Это важно, так как разные удаленные клиенты могут иметь разный доступ к контенту.
+
+**Пример с RCH:** [11](#1-10) 
+
+## Автоматическая очистка кеша
+
+Система `CacheCron` периодически очищает устаревшие файлы кеша [12](#1-11) :
+
+- Запускается каждые 4 минуты [13](#1-12) 
+- Очищает различные типы кеша: tmdb, cub, img, torrent, html, hls [14](#1-13) 
+- Удаляет файлы старше указанного времени [15](#1-14) 
+
+## Кеширование ошибок
+
+В режиме `multiaccess` ошибки кешируются на 20 секунд для предотвращения перегрузки<cite />. Проверка происходит через `IsCacheError()` в методе `IsBadInitialization()`<cite />.
+
+## Notes
+
+Система кеширования в Lampac оптимизирована для работы с множественными источниками контента. Ключевые особенности:
+- Семафоры предотвращают дублирующие запросы к одному и тому же контенту
+- HybridCache позволяет использовать как память, так и диск
+- RCH-aware кеширование учитывает IP удаленных клиентов
+- Автоматическая очистка предотвращает переполнение диска
+
+Для вашего Smartfilter агрегатора важно учитывать, что каждый источник уже кеширует свои данные, поэтому вы можете просто вызывать их API и полагаться на их кеш, либо добавить свой слой кеширования для агрегированных результатов.
+
+Wiki pages you might want to explore:
+- [Content Provider Architecture (immisterio/Lampac)](/wiki/immisterio/Lampac#6.1)
+- [Remote Client Hub (RCH) System (immisterio/Lampac)](/wiki/immisterio/Lampac#8.3)
+
+### Citations
+
+**File:** Shared/BaseController.cs (L324-373)
+```csharp
+        #region InvokeCache
+        public ValueTask<CacheResult<T>> InvokeCache<T>(string key, TimeSpan time, Func<CacheResult<T>, ValueTask<dynamic>> onget) => InvokeCache(key, time, null, onget);
+
+        async public ValueTask<CacheResult<T>> InvokeCache<T>(string key, TimeSpan time, ProxyManager? proxyManager, Func<CacheResult<T>, ValueTask<dynamic>> onget, bool? memory = null)
+        {
+            var semaphore = _semaphoreLocks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+
+            try
+            {
+                await semaphore.WaitAsync(TimeSpan.FromSeconds(40));
+
+                if (hybridCache.TryGetValue(key, out T _val, memory))
+                {
+                    HttpContext.Response.Headers.TryAdd("X-Invoke-Cache", "HIT");
+                    return new CacheResult<T>() { IsSuccess = true, Value = _val };
+                }
+
+                HttpContext.Response.Headers.TryAdd("X-Invoke-Cache", "MISS");
+
+                var val = await onget.Invoke(new CacheResult<T>());
+
+                if (val == null)
+                    return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "null" };
+
+                if (val.GetType() == typeof(CacheResult<T>))
+                    return (CacheResult<T>)val;
+
+                if (val.Equals(default(T)))
+                    return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "default" };
+
+                if (typeof(T) == typeof(string) && string.IsNullOrEmpty(val.ToString()))
+                    return new CacheResult<T>() { IsSuccess = false, ErrorMsg = "empty" };
+
+                proxyManager?.Success();
+                hybridCache.Set(key, val, time, memory);
+                return new CacheResult<T>() { IsSuccess = true, Value = val };
+            }
+            finally
+            {
+                try
+                {
+                    semaphore.Release();
+                }
+                finally
+                {
+                    if (semaphore.CurrentCount == 1)
+                        _semaphoreLocks.TryRemove(key, out _);
+                }
+            }
+        }
+```
+
+**File:** Online/Controllers/Rezka.cs (L184-184)
+```csharp
+            Episodes root = await InvokeCache($"rezka:view:serial:{id}:{t}", cacheTime(20, init: init), () => oninvk.SerialEmbed(id, t));
+```
+
+**File:** Online/Controllers/Rezka.cs (L223-227)
+```csharp
+                md = await InvokeCache(rch.ipkey($"rezka:movie:{voice}:{realip}:{init.cookie}", proxyManager), cacheTime(20, mikrotik: 1, init: init), () => oninvk.Movie(voice), proxyManager);
+            }
+
+            if (md == null && init.ajax != null)
+                md = await InvokeCache(rch.ipkey($"rezka:view:get_cdn_series:{id}:{t}:{director}:{s}:{e}:{realip}:{init.cookie}", proxyManager), cacheTime(20, mikrotik: 1, init: init), () => oninvk.Movie(id, t, director, s, e, favs), proxyManager);
+```
+
+**File:** Online/Controllers/VDBmovies.cs (L117-117)
+```csharp
+            var cache = await InvokeCache<EmbedModel>(rch.ipkey($"vdbmovies:{orid}:{kinopoisk_id}", proxyManager), cacheTime(20, rhub: 2, init: init), proxyManager, async res =>
+```
+
+**File:** Online/Controllers/Mirage.cs (L445-445)
+```csharp
+            var cache = await InvokeCache<JArray>($"mirage:search:{title}", cacheTime(40, init: init), proxyManager, async res =>
+```
+
+**File:** Lampac/Engine/CRON/CacheCron.cs (L12-60)
+```csharp
+        public static void Run()
+        {
+            _cronTimer = new Timer(cron, null, TimeSpan.FromMinutes(2), TimeSpan.FromMinutes(4));
+        }
+
+        static Timer _cronTimer;
+
+        static bool _cronWork = false;
+
+        static void cron(object state)
+        {
+            if (_cronWork)
+                return;
+
+            _cronWork = true;
+
+            try
+            {
+                var files = new Dictionary<string, FileInfo>();
+                long freeDiskSpace = getFreeDiskSpace();
+
+                foreach (var conf in new List<(string path, int minute)> {
+                    ("tmdb", AppInit.conf.tmdb.cache_img),
+                    ("cub", AppInit.conf.cub.cache_img),
+                    ("img", AppInit.conf.serverproxy.image.cache_time),
+                    ("torrent", AppInit.conf.fileCacheInactive.torrent),
+                    ("html", AppInit.conf.fileCacheInactive.html),
+                    ("hls", AppInit.conf.fileCacheInactive.hls),
+                    ("storage/temp", 10)
+                })
+                {
+                    try
+                    {
+                        if (conf.minute == -1 || !Directory.Exists(Path.Combine("cache", conf.path)))
+                            continue;
+
+                        foreach (string infile in Directory.EnumerateFiles(Path.Combine("cache", conf.path), "*", SearchOption.AllDirectories))
+                        {
+                            try
+                            {
+                                if (conf.minute == 0)
+                                    File.Delete(infile);
+                                else
+                                {
+                                    var fileinfo = new FileInfo(infile);
+                                    if (DateTime.Now > fileinfo.LastWriteTime.AddMinutes(conf.minute))
+                                        fileinfo.Delete();
+                                    else if (1073741824 > freeDiskSpace) // 1Gb
+                                        files.TryAdd(infile, fileinfo);
+```
