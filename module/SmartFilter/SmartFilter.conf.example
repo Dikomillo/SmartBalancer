@@ -1,4 +1,4 @@
-﻿{  
+{  
   "_comment": "Основные настройки SmartFilter агрегатора",  
   "enable": true,  
   "_enable_desc": "Включить/выключить модуль SmartFilter",  
@@ -24,21 +24,9 @@
   "maxRetryAttempts": 3,  
   "_maxRetryAttempts_desc": "Максимальное количество повторных попыток (2-3 попытки оптимально)",  
       
-  "retryDelayMs": 1500,
-  "_retryDelayMs_desc": "Задержка между повторными попытками в миллисекундах (1000-2000ms для избежания блокировок)",
-
-  "detailedLogging": false,
-  "_detailedLogging_desc": "Включить детальное логирование для диагностики (true только для отладки, замедляет работу)",
-
-  "enableSeasonFallback": true,
-  "_enableSeasonFallback_desc": "Разрешить резервный режим построения сезонов из данных эпизодов, если провайдер не вернул готовый список",
-
-  "enableEpisodeFallback": true,
-  "_enableEpisodeFallback_desc": "Использовать упрощённый рендер эпизодов, если строгая нормализация не сработала",
-
-  "logDroppedItems": false,
-  "_logDroppedItems_desc": "Логировать элементы, отфильтрованные при нормализации (может содержать личные данные, включать осторожно)",
-
-  "preferSingleProviderPassthrough": true,
-  "_preferSingleProviderPassthrough_desc": "Если найден только один провайдер, отдавать его результат без агрегации"
+  "retryDelayMs": 1500,  
+  "_retryDelayMs_desc": "Задержка между повторными попытками в миллисекундах (1000-2000ms для избежания блокировок)",  
+      
+  "detailedLogging": false,  
+  "_detailedLogging_desc": "Включить детальное логирование для диагностики (true только для отладки, замедляет работу)"  
 }
