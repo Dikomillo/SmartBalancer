@@ -6,25 +6,20 @@ using System;
 using System.Net.Http;
 using System.Collections.Generic;
 using System.Linq;
-using System.Net;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.AspNetCore.Http;
 
 namespace SmartFilter
 {
     public class SmartFilterEngine
     {
-        private readonly IMemoryCache memoryCache;
         private readonly string host;
         private readonly HttpContext httpContext;
         private readonly SemaphoreSlim semaphore;
 
-        public SmartFilterEngine(IMemoryCache cache, string hostUrl, HttpContext context)
+        public SmartFilterEngine(string hostUrl, HttpContext context)
         {
-            memoryCache = cache;
             host = hostUrl;
             httpContext = context;
             semaphore = new SemaphoreSlim(ModInit.conf.maxParallelRequests, ModInit.conf.maxParallelRequests);
@@ -35,20 +30,10 @@ namespace SmartFilter
         {
             Console.WriteLine($"🔍 SmartFilter: Starting aggregation for '{title}' ({year})");
 
-            string cacheKey = $"smartfilter:{imdb_id}:{kinopoisk_id}:{title}:{year}:{serial}";
-            if (memoryCache.TryGetValue(cacheKey, out List<ProviderResult> cachedResult))
-            {
-                Console.WriteLine($"✅ SmartFilter: Cache hit for '{title}'");
-                return cachedResult;
-            }
-
-            Console.WriteLine($"❌ SmartFilter: Cache miss for '{title}', fetching data");
-
             var providers = await GetActiveProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language);
             if (providers.Count == 0)
             {
                 Console.WriteLine($"⚠️ SmartFilter: No active providers found for '{title}'");
-                memoryCache.Set(cacheKey, new List<ProviderResult>(), TimeSpan.FromMinutes(ModInit.conf.cacheTimeMinutes));
                 return new List<ProviderResult>();
             }
 
@@ -70,7 +55,6 @@ namespace SmartFilter
             await Task.WhenAll(tasks);
 
             Console.WriteLine($"✅ SmartFilter: Aggregated {aggregatedResults.Count} provider results for '{title}'");
-            memoryCache.Set(cacheKey, aggregatedResults, TimeSpan.FromMinutes(ModInit.conf.cacheTimeMinutes));
             return aggregatedResults;
         }
 
@@ -173,6 +157,16 @@ namespace SmartFilter
                 if (year > 0) queryParams.Add($"year={year}");
                 if (serial >= 0) queryParams.Add($"serial={serial}");
                 if (!string.IsNullOrEmpty(original_language)) queryParams.Add($"original_language={Uri.EscapeDataString(original_language)}");
+
+                if (serial == 1)
+                {
+                    string seasonParam = httpContext?.Request?.Query?["s"];
+                    if (string.IsNullOrEmpty(seasonParam))
+                        seasonParam = "-1";
+
+                    if (!string.IsNullOrEmpty(seasonParam) && !provider.url.Contains("s="))
+                        queryParams.Add($"s={Uri.EscapeDataString(seasonParam)}");
+                }
 
                 // Исправляем формирование URL (убираем двойные ??)
                 string separator = provider.url.Contains("?") ? "&" : "?";
