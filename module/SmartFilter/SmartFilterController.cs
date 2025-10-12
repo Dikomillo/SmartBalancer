@@ -187,7 +187,7 @@ namespace SmartFilter
                         serialCacheKey,
                         serialTtl,
                         proxyManager: null,
-                        async res =>
+                        res =>
                         {
                             var sr = GetSerials.Process(
                                 validResults,
@@ -199,9 +199,9 @@ namespace SmartFilter
                             );
 
                             if (sr == null || (sr.SeasonCount == 0 && sr.EpisodeCount == 0))
-                                return res.Fail("no content");
+                                return new ValueTask<dynamic>((dynamic)res.Fail("no content"));
 
-                            return sr;
+                            return new ValueTask<dynamic>(sr);
                         }
                     );
 

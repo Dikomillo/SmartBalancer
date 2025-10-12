@@ -26,12 +26,41 @@ namespace SmartFilter
         }
 
         public async Task<List<ProviderResult>> AggregateProvidersAsync(
-            string imdb_id, long kinopoisk_id, string title, string original_title, int year, int serial, string original_language)
+            long id,
+            string imdb_id,
+            long kinopoisk_id,
+            string title,
+            string original_title,
+            int year,
+            int serial,
+            string original_language,
+            string source,
+            string rchtype,
+            bool life,
+            bool islite,
+            string account_email,
+            string uid,
+            string token)
         {
             Console.WriteLine($"🔍 SmartFilter: Starting aggregation for '{title}' ({year})");
 
-            var accessToken = ResolveToken();
-            var providers = await GetActiveProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language, accessToken);
+            var accessToken = !string.IsNullOrWhiteSpace(token) ? token : ResolveToken();
+            var providers = await GetActiveProvidersAsync(
+                id,
+                imdb_id,
+                kinopoisk_id,
+                title,
+                original_title,
+                year,
+                serial,
+                original_language,
+                source,
+                rchtype,
+                life,
+                islite,
+                account_email,
+                uid,
+                accessToken);
             if (providers.Count == 0)
             {
                 Console.WriteLine($"⚠️ SmartFilter: No active providers found for '{title}'");
@@ -43,7 +72,24 @@ namespace SmartFilter
             var aggregatedResults = new List<ProviderResult>();
             var tasks = providers.Select(async provider =>
             {
-                var result = await FetchProviderTemplateAsync(provider, imdb_id, kinopoisk_id, title, original_title, year, serial, original_language, accessToken);
+                var result = await FetchProviderTemplateAsync(
+                    provider,
+                    id,
+                    imdb_id,
+                    kinopoisk_id,
+                    title,
+                    original_title,
+                    year,
+                    serial,
+                    original_language,
+                    source,
+                    rchtype,
+                    life,
+                    islite,
+                    account_email,
+                    uid,
+                    accessToken);
+
                 if (result != null)
                 {
                     lock (aggregatedResults)
@@ -60,6 +106,7 @@ namespace SmartFilter
         }
 
         private async Task<List<(string name, string url)>> GetActiveProvidersAsync(
+            long id,
             string imdb_id,
             long kinopoisk_id,
             string title,
@@ -67,6 +114,12 @@ namespace SmartFilter
             int year,
             int serial,
             string original_language,
+            string source,
+            string rchtype,
+            bool life,
+            bool islite,
+            string account_email,
+            string uid,
             string accessToken)
         {
             var providers = new List<(string name, string url)>();
@@ -74,6 +127,9 @@ namespace SmartFilter
             try
             {
                 var queryParams = new List<string>();
+                var exclude = ModInit.conf.excludeProviders ?? Array.Empty<string>();
+                var includeOnly = ModInit.conf.includeOnlyProviders ?? Array.Empty<string>();
+                if (id > 0) queryParams.Add($"id={id}");
                 if (!string.IsNullOrEmpty(imdb_id)) queryParams.Add($"imdb_id={Uri.EscapeDataString(imdb_id)}");
                 if (kinopoisk_id > 0) queryParams.Add($"kinopoisk_id={kinopoisk_id}");
                 if (!string.IsNullOrEmpty(title)) queryParams.Add($"title={Uri.EscapeDataString(title)}");
@@ -81,6 +137,12 @@ namespace SmartFilter
                 if (year > 0) queryParams.Add($"year={year}");
                 if (serial >= 0) queryParams.Add($"serial={serial}");
                 if (!string.IsNullOrEmpty(original_language)) queryParams.Add($"original_language={Uri.EscapeDataString(original_language)}");
+                if (!string.IsNullOrEmpty(source)) queryParams.Add($"source={Uri.EscapeDataString(source)}");
+                if (!string.IsNullOrEmpty(rchtype)) queryParams.Add($"rchtype={Uri.EscapeDataString(rchtype)}");
+                if (life) queryParams.Add("life=true");
+                if (islite) queryParams.Add("islite=true");
+                if (!string.IsNullOrEmpty(account_email)) queryParams.Add($"account_email={Uri.EscapeDataString(account_email)}");
+                if (!string.IsNullOrEmpty(uid)) queryParams.Add($"uid={Uri.EscapeDataString(uid)}");
                 if (!string.IsNullOrEmpty(accessToken)) queryParams.Add($"token={Uri.EscapeDataString(accessToken)}");
 
                 string queryString = string.Join("&", queryParams.Where(p => !string.IsNullOrEmpty(p)));
@@ -118,14 +180,14 @@ namespace SmartFilter
                             }
 
                             // Проверяем исключения
-                            if (ModInit.conf.excludeProviders.Contains(name))
+                            if (exclude.Contains(name))
                             {
                                 Console.WriteLine($"⏭️ SmartFilter: Excluding provider '{name}' (in excludeProviders)");
                                 continue;
                             }
 
                             // Проверяем включения (если список не пустой)
-                            if (ModInit.conf.includeOnlyProviders.Length > 0 && !ModInit.conf.includeOnlyProviders.Contains(name))
+                            if (includeOnly.Length > 0 && !includeOnly.Contains(name))
                             {
                                 Console.WriteLine($"⏭️ SmartFilter: Skipping provider '{name}' (not in includeOnlyProviders)");
                                 continue;
@@ -155,6 +217,7 @@ namespace SmartFilter
 
         private async Task<ProviderResult> FetchProviderTemplateAsync(
             (string name, string url) provider,
+            long id,
             string imdb_id,
             long kinopoisk_id,
             string title,
@@ -162,14 +225,22 @@ namespace SmartFilter
             int year,
             int serial,
             string original_language,
+            string source,
+            string rchtype,
+            bool life,
+            bool islite,
+            string account_email,
+            string uid,
             string accessToken)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             await semaphore.WaitAsync();
+            string finalUrl = provider.url;
 
             try
             {
                 var queryParams = new List<string> { "rjson=true" };
+                if (id > 0 && !ContainsParameter(provider.url, "id")) queryParams.Add($"id={id}");
                 if (!string.IsNullOrEmpty(imdb_id)) queryParams.Add($"imdb_id={Uri.EscapeDataString(imdb_id)}");
                 if (kinopoisk_id > 0) queryParams.Add($"kinopoisk_id={kinopoisk_id}");
                 if (!string.IsNullOrEmpty(title)) queryParams.Add($"title={Uri.EscapeDataString(title)}");
@@ -177,7 +248,13 @@ namespace SmartFilter
                 if (year > 0) queryParams.Add($"year={year}");
                 if (serial >= 0) queryParams.Add($"serial={serial}");
                 if (!string.IsNullOrEmpty(original_language)) queryParams.Add($"original_language={Uri.EscapeDataString(original_language)}");
-                if (!string.IsNullOrEmpty(accessToken) && !provider.url.Contains("token="))
+                if (!string.IsNullOrEmpty(source) && !ContainsParameter(provider.url, "source")) queryParams.Add($"source={Uri.EscapeDataString(source)}");
+                if (!string.IsNullOrEmpty(rchtype) && !ContainsParameter(provider.url, "rchtype")) queryParams.Add($"rchtype={Uri.EscapeDataString(rchtype)}");
+                if (life && !ContainsParameter(provider.url, "life")) queryParams.Add("life=true");
+                if (islite && !ContainsParameter(provider.url, "islite")) queryParams.Add("islite=true");
+                if (!string.IsNullOrEmpty(account_email) && !ContainsParameter(provider.url, "account_email")) queryParams.Add($"account_email={Uri.EscapeDataString(account_email)}");
+                if (!string.IsNullOrEmpty(uid) && !ContainsParameter(provider.url, "uid")) queryParams.Add($"uid={Uri.EscapeDataString(uid)}");
+                if (!string.IsNullOrEmpty(accessToken) && !ContainsParameter(provider.url, "token"))
                     queryParams.Add($"token={Uri.EscapeDataString(accessToken)}");
 
                 if (serial == 1)
@@ -186,7 +263,7 @@ namespace SmartFilter
                     if (string.IsNullOrEmpty(seasonParam))
                         seasonParam = "-1";
 
-                    if (!string.IsNullOrEmpty(seasonParam) && !provider.url.Contains("s="))
+                    if (!string.IsNullOrEmpty(seasonParam) && !ContainsParameter(provider.url, "s"))
                         queryParams.Add($"s={Uri.EscapeDataString(seasonParam)}");
                 }
 
@@ -196,6 +273,7 @@ namespace SmartFilter
                 string url = string.IsNullOrEmpty(queryString)
                     ? provider.url
                     : $"{provider.url}{separator}{queryString}";
+                finalUrl = url;
                 
                 // Retry логика
                 int maxAttempts = ModInit.conf.enableRetry ? ModInit.conf.maxRetryAttempts : 1;
@@ -223,13 +301,15 @@ namespace SmartFilter
                             stopwatch.Stop();
                             var dataCount = CountResponseItems(response);
                             Console.WriteLine($"⏱️ SmartFilter: {provider.name} responded in {stopwatch.ElapsedMilliseconds}ms with {dataCount} items");
-                            
+
                             return new ProviderResult
                             {
                                 ProviderName = provider.name,
                                 JsonData = response,
                                 HasContent = !IsEmptyResponse(response),
+                                Success = true,
                                 ResponseTime = (int)stopwatch.ElapsedMilliseconds,
+                                ProviderUrl = finalUrl,
                                 FetchedAt = DateTime.Now
                             };
                         }
@@ -263,7 +343,18 @@ namespace SmartFilter
                 semaphore.Release();
             }
 
-            return null;
+            if (stopwatch.IsRunning)
+                stopwatch.Stop();
+
+            return new ProviderResult
+            {
+                ProviderName = provider.name,
+                ProviderUrl = finalUrl,
+                Success = false,
+                HasContent = false,
+                ResponseTime = (int)stopwatch.ElapsedMilliseconds,
+                FetchedAt = DateTime.Now
+            };
         }
 
         private int CountResponseItems(string response)
@@ -369,6 +460,29 @@ namespace SmartFilter
             {
                 return true;
             }
+        }
+
+        private static bool ContainsParameter(string url, string key)
+        {
+            if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(key))
+                return false;
+
+            int questionIndex = url.IndexOf('?');
+            if (questionIndex == -1)
+                return false;
+
+            string query = url.Substring(questionIndex + 1);
+            foreach (var segment in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var parts = segment.Split('=', 2);
+                if (parts.Length == 0)
+                    continue;
+
+                if (parts[0].Equals(key, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
 
         private string ResolveToken()
