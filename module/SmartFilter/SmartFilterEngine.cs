@@ -30,7 +30,8 @@ namespace SmartFilter
         {
             Console.WriteLine($"🔍 SmartFilter: Starting aggregation for '{title}' ({year})");
 
-            var providers = await GetActiveProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language);
+            var accessToken = ResolveToken();
+            var providers = await GetActiveProvidersAsync(imdb_id, kinopoisk_id, title, original_title, year, serial, original_language, accessToken);
             if (providers.Count == 0)
             {
                 Console.WriteLine($"⚠️ SmartFilter: No active providers found for '{title}'");
@@ -42,7 +43,7 @@ namespace SmartFilter
             var aggregatedResults = new List<ProviderResult>();
             var tasks = providers.Select(async provider =>
             {
-                var result = await FetchProviderTemplateAsync(provider, imdb_id, kinopoisk_id, title, original_title, year, serial, original_language);
+                var result = await FetchProviderTemplateAsync(provider, imdb_id, kinopoisk_id, title, original_title, year, serial, original_language, accessToken);
                 if (result != null)
                 {
                     lock (aggregatedResults)
@@ -59,7 +60,14 @@ namespace SmartFilter
         }
 
         private async Task<List<(string name, string url)>> GetActiveProvidersAsync(
-            string imdb_id, long kinopoisk_id, string title, string original_title, int year, int serial, string original_language)
+            string imdb_id,
+            long kinopoisk_id,
+            string title,
+            string original_title,
+            int year,
+            int serial,
+            string original_language,
+            string accessToken)
         {
             var providers = new List<(string name, string url)>();
 
@@ -73,8 +81,12 @@ namespace SmartFilter
                 if (year > 0) queryParams.Add($"year={year}");
                 if (serial >= 0) queryParams.Add($"serial={serial}");
                 if (!string.IsNullOrEmpty(original_language)) queryParams.Add($"original_language={Uri.EscapeDataString(original_language)}");
+                if (!string.IsNullOrEmpty(accessToken)) queryParams.Add($"token={Uri.EscapeDataString(accessToken)}");
 
-                string eventsUrl = $"{host}/lite/events?{string.Join("&", queryParams)}";
+                string queryString = string.Join("&", queryParams.Where(p => !string.IsNullOrEmpty(p)));
+                string eventsUrl = string.IsNullOrEmpty(queryString)
+                    ? $"{host}/lite/events"
+                    : $"{host}/lite/events?{queryString}";
                 Console.WriteLine($"🌐 SmartFilter: Fetching providers from: {eventsUrl}");
 
                 using var httpClient = new HttpClient();
@@ -142,7 +154,15 @@ namespace SmartFilter
         }
 
         private async Task<ProviderResult> FetchProviderTemplateAsync(
-            (string name, string url) provider, string imdb_id, long kinopoisk_id, string title, string original_title, int year, int serial, string original_language)
+            (string name, string url) provider,
+            string imdb_id,
+            long kinopoisk_id,
+            string title,
+            string original_title,
+            int year,
+            int serial,
+            string original_language,
+            string accessToken)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             await semaphore.WaitAsync();
@@ -157,6 +177,8 @@ namespace SmartFilter
                 if (year > 0) queryParams.Add($"year={year}");
                 if (serial >= 0) queryParams.Add($"serial={serial}");
                 if (!string.IsNullOrEmpty(original_language)) queryParams.Add($"original_language={Uri.EscapeDataString(original_language)}");
+                if (!string.IsNullOrEmpty(accessToken) && !provider.url.Contains("token="))
+                    queryParams.Add($"token={Uri.EscapeDataString(accessToken)}");
 
                 if (serial == 1)
                 {
@@ -170,7 +192,10 @@ namespace SmartFilter
 
                 // Исправляем формирование URL (убираем двойные ??)
                 string separator = provider.url.Contains("?") ? "&" : "?";
-                string url = $"{provider.url}{separator}{string.Join("&", queryParams)}";
+                string queryString = string.Join("&", queryParams.Where(p => !string.IsNullOrEmpty(p)));
+                string url = string.IsNullOrEmpty(queryString)
+                    ? provider.url
+                    : $"{provider.url}{separator}{queryString}";
                 
                 // Retry логика
                 int maxAttempts = ModInit.conf.enableRetry ? ModInit.conf.maxRetryAttempts : 1;
@@ -344,6 +369,19 @@ namespace SmartFilter
             {
                 return true;
             }
+        }
+
+        private string ResolveToken()
+        {
+            string token = httpContext?.Request?.Query["token"].ToString();
+
+            if (string.IsNullOrWhiteSpace(token))
+                token = httpContext?.Request?.Headers["token"].ToString();
+
+            if (string.IsNullOrWhiteSpace(token) && httpContext?.Items?.ContainsKey("token") == true)
+                token = httpContext.Items["token"]?.ToString();
+
+            return string.IsNullOrWhiteSpace(token) ? null : token;
         }
     }
 }
