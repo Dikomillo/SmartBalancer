@@ -1,4 +1,11 @@
 # Codex Agent Rules — Lampac Project (DeepWiki + Context7)
+Отвечай всегда на русском.
+Основной проект тут:
+ - https://github.com/immisterio/Lampac/tree/main/Online
+ - https://github.com/immisterio/Lampac/tree/main/Shared
+ - https://github.com/immisterio/Lampac
+ - https://deepwiki.com/immisterio/Lampac документация deepwiki
+
 
 ## 📘 Общие правила
 - Источник архитектуры и практик — DeepWiki репозитория `immisterio/Lampac` и `Dikomillo/SmartBalancer`
