@@ -142,14 +142,17 @@ namespace SmartFilter
                     var serialCache = await InvokeCache<SerialProcessResult>(
                         serialCacheKey,
                         serialTtl,
-                        async res =>
+                        res => // убрали async
                         {
-                            var result = GetSerials.Process(validResults, title, original_title, host, HttpContext.Request.QueryString.Value ?? string.Empty, rjson);
+                            var result = GetSerials.Process(
+                                validResults, title, original_title, host,
+                                HttpContext.Request.QueryString.Value ?? string.Empty, rjson);
 
                             if (result == null || (result.SeasonCount == 0 && result.EpisodeCount == 0))
                                 return res.Fail("no content");
 
-                            return result;
+                            // Возвращаем синхронный результат как ValueTask<dynamic>
+                            return new ValueTask<dynamic>(result);
                         });
 
                     if (!serialCache.IsSuccess)
