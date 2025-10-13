@@ -41,6 +41,8 @@
         sfilterBackHandler: null,
         sfilterPrevController: null,
         sfilterControllerName: 'smartfilter-modal',
+        activeSFilterVoices: [],
+        activeSFilterQualities: [],
 
         init() {
             this.ensurePolyfills();
@@ -670,70 +672,176 @@
                     color: rgba(255, 255, 255, 0.7);
                 }
 
-                .smartfilter-modal {
+                .smartfilter-drawer {
                     position: fixed;
-                    top: 0;
-                    left: 0;
-                    right: 0;
-                    bottom: 0;
-                    background: rgba(0, 0, 0, 0.85);
-                    z-index: 10000;
+                    inset: 0;
                     display: flex;
-                    justify-content: center;
+                    justify-content: flex-end;
+                    background: rgba(0, 0, 0, 0.45);
+                    backdrop-filter: blur(2px);
+                    z-index: 10000;
+                    opacity: 0;
+                    animation: smartfilter-drawer-fade 0.2s ease forwards;
+                }
+
+                .smartfilter-drawer__panel {
+                    width: min(420px, 92vw);
+                    max-width: 440px;
+                    height: 100%;
+                    background: rgba(16, 16, 16, 0.96);
+                    border-left: 1px solid rgba(255, 255, 255, 0.08);
+                    box-shadow: -18px 0 36px rgba(0, 0, 0, 0.65);
+                    display: flex;
+                    flex-direction: column;
+                    gap: 22px;
+                    padding: 26px 28px 28px;
+                    transform: translateX(64px);
+                    animation: smartfilter-slide-in 0.28s ease forwards;
+                }
+
+                .smartfilter-drawer__header {
+                    display: flex;
                     align-items: center;
+                    justify-content: space-between;
+                    gap: 14px;
                 }
 
-                .smartfilter-modal__content {
-                    width: 90%;
-                    max-width: 520px;
-                    max-height: 80%;
+                .smartfilter-drawer__title {
+                    font-size: 22px;
+                    font-weight: 600;
+                    letter-spacing: 0.02em;
+                }
+
+                .smartfilter-drawer__close {
+                    background: none;
+                    border: 0;
+                    color: rgba(255, 255, 255, 0.72);
+                    font-size: 14px;
+                    font-weight: 500;
+                    padding: 8px 0;
+                    cursor: pointer;
+                }
+
+                .smartfilter-drawer__close:focus {
+                    outline: none;
+                }
+
+                .smartfilter-drawer__body {
+                    flex: 1;
                     overflow-y: auto;
-                    background: #1f1f1f;
-                    border-radius: 10px;
-                    padding: 20px;
-                    color: #fff;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 24px;
+                    padding-right: 4px;
                 }
 
-                .smartfilter-modal__section {
-                    margin-top: 16px;
+                .smartfilter-group {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 12px;
                 }
 
-                .smartfilter-modal__section h3 {
-                    margin: 0 0 8px 0;
-                    font-size: 16px;
+                .smartfilter-group__title {
+                    font-size: 15px;
+                    font-weight: 600;
+                    text-transform: uppercase;
+                    letter-spacing: 0.04em;
+                    color: rgba(255, 255, 255, 0.72);
+                }
+
+                .smartfilter-group__options {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 8px;
                 }
 
                 .smartfilter-chip {
-                    display: inline-flex;
+                    display: flex;
                     align-items: center;
-                    padding: 6px 12px;
-                    margin: 4px;
-                    border-radius: 20px;
-                    border: 0;
-                    background: rgba(255, 255, 255, 0.08);
+                    justify-content: space-between;
+                    width: 100%;
+                    padding: 12px 14px;
+                    border-radius: 14px;
+                    background: rgba(255, 255, 255, 0.06);
                     color: inherit;
                     font: inherit;
                     cursor: pointer;
-                    transition: background 0.2s ease, transform 0.15s ease;
+                    border: 1px solid transparent;
+                    transition: background 0.22s ease, border-color 0.22s ease, transform 0.2s ease;
+                }
+
+                .smartfilter-chip.selector {
+                    min-height: 46px;
                 }
 
                 .smartfilter-chip:focus {
                     outline: none;
                 }
 
-                .smartfilter-chip:focus-visible {
-                    outline: 2px solid rgba(76, 175, 80, 0.65);
-                    outline-offset: 2px;
+                .smartfilter-chip:focus-visible,
+                .smartfilter-chip.hover,
+                .smartfilter-chip.selector.focus {
+                    border-color: rgba(124, 252, 202, 0.6);
+                    box-shadow: 0 0 0 1px rgba(124, 252, 202, 0.25);
                 }
 
                 .smartfilter-chip.active {
-                    background: #4CAF50;
+                    background: linear-gradient(90deg, rgba(76, 175, 80, 0.9), rgba(30, 136, 229, 0.85));
+                    border-color: rgba(124, 252, 202, 0.6);
+                    box-shadow: 0 12px 24px rgba(18, 87, 64, 0.35);
                     transform: translateY(-1px);
+                }
+
+                .smartfilter-chip__label {
+                    font-size: 15px;
+                    font-weight: 500;
+                }
+
+                .smartfilter-chip__count {
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: rgba(255, 255, 255, 0.8);
+                    background: rgba(255, 255, 255, 0.12);
+                    padding: 2px 10px;
+                    border-radius: 999px;
+                    letter-spacing: 0.03em;
+                }
+
+                .smartfilter-drawer__empty {
+                    font-size: 14px;
+                    color: rgba(255, 255, 255, 0.55);
+                }
+
+                .smartfilter-drawer__footer {
+                    display: flex;
+                    justify-content: flex-end;
+                    gap: 12px;
+                }
+
+                .smartfilter-drawer__footer .simple-button {
+                    min-width: 120px;
+                    justify-content: center;
                 }
 
                 .smartfilter-source-highlight {
                     background: linear-gradient(90deg, #2E7D32 0%, #4CAF50 100%) !important;
                     color: #fff !important;
+                }
+
+                @keyframes smartfilter-drawer-fade {
+                    from { opacity: 0; }
+                    to { opacity: 1; }
+                }
+
+                @keyframes smartfilter-slide-in {
+                    from {
+                        transform: translateX(120px);
+                        opacity: 0;
+                    }
+                    to {
+                        transform: translateX(0);
+                        opacity: 1;
+                    }
                 }
 
                 @keyframes smartfilter-spin {
@@ -1115,6 +1223,12 @@
             if (Array.isArray(items)) {
                 this.sfilterItems = items.filter((item) => item && typeof item === 'object');
                 this.clearSFilterFilters();
+                if ((Array.isArray(this.activeSFilterVoices) && this.activeSFilterVoices.length)
+                    || (Array.isArray(this.activeSFilterQualities) && this.activeSFilterQualities.length)) {
+                    const voices = Array.isArray(this.activeSFilterVoices) ? this.activeSFilterVoices.slice() : [];
+                    const qualities = Array.isArray(this.activeSFilterQualities) ? this.activeSFilterQualities.slice() : [];
+                    this.applySFilterFilters(voices, qualities);
+                }
             } else if (!options.reset) {
                 this.sfilterItems = [];
             }
@@ -1127,6 +1241,8 @@
             this.closeSFilterModal();
             this.sfilterItems = [];
             this.seriesState = null;
+            this.activeSFilterVoices = [];
+            this.activeSFilterQualities = [];
             this.clearSFilterFilters();
         },
 
@@ -1456,22 +1572,38 @@
                 return;
 
             const modal = document.createElement('div');
-            modal.className = 'smartfilter-modal';
+            modal.className = 'smartfilter-drawer';
+
+            const hasVoices = voices.length > 0;
+            const hasQualities = qualities.length > 0;
+            const groups = [];
+
+            if (hasVoices) {
+                groups.push(`
+                    <div class="smartfilter-group" data-group="voice">
+                        <div class="smartfilter-group__title">Озвучки</div>
+                        <div class="smartfilter-group__options">${voices.map((voice) => this.createSFilterChip('voice', voice)).join('')}</div>
+                    </div>`);
+            }
+
+            if (hasQualities) {
+                groups.push(`
+                    <div class="smartfilter-group" data-group="quality">
+                        <div class="smartfilter-group__title">Качество</div>
+                        <div class="smartfilter-group__options">${qualities.map((quality) => this.createSFilterChip('quality', quality)).join('')}</div>
+                    </div>`);
+            }
+
             modal.innerHTML = `
-                <div class="smartfilter-modal__content">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <h2 style="margin:0">SmartFilter</h2>
-                        <button class="simple-button selector" id="smartfilter-modal-close">Закрыть окно</button>
+                <div class="smartfilter-drawer__panel" role="dialog" aria-modal="true" aria-label="SmartFilter">
+                    <div class="smartfilter-drawer__header">
+                        <div class="smartfilter-drawer__title">SmartFilter</div>
+                        <button type="button" class="smartfilter-drawer__close selector" id="smartfilter-modal-close">Закрыть</button>
                     </div>
-                    <div class="smartfilter-modal__section">
-                        <h3>Озвучки</h3>
-                        <div>${voices.map((voice) => this.createSFilterChip('voice', voice)).join('')}</div>
+                    <div class="smartfilter-drawer__body">
+                        ${groups.join('') || '<div class="smartfilter-drawer__empty">Нет данных для фильтрации</div>'}
                     </div>
-                    <div class="smartfilter-modal__section">
-                        <h3>Качество</h3>
-                        <div>${qualities.map((quality) => this.createSFilterChip('quality', quality)).join('')}</div>
-                    </div>
-                    <div style="margin-top:20px;display:flex;justify-content:flex-end;gap:10px;">
+                    <div class="smartfilter-drawer__footer">
                         <button class="simple-button selector" id="smartfilter-reset">Сбросить</button>
                         <button class="simple-button selector" id="smartfilter-apply">Применить</button>
                     </div>
@@ -1483,26 +1615,49 @@
             const closeModal = () => this.closeSFilterModal();
 
             const closeButton = modal.querySelector('#smartfilter-modal-close');
-            if (closeButton)
+            if (closeButton) {
                 closeButton.addEventListener('click', closeModal);
+                closeButton.addEventListener('hover:enter', closeModal);
+            }
+
+            modal.addEventListener('click', (event) => {
+                if (event.target === modal)
+                    closeModal();
+            });
 
             const resetButton = modal.querySelector('#smartfilter-reset');
-            if (resetButton)
-                resetButton.addEventListener('click', () => {
+            if (resetButton) {
+                const handleReset = () => {
                     this.forEachNode(modal.querySelectorAll('.smartfilter-chip'), (chip) => this.removeClass(chip, 'active'));
-                });
+                };
+                resetButton.addEventListener('click', handleReset);
+                resetButton.addEventListener('hover:enter', handleReset);
+            }
 
             const applyButton = modal.querySelector('#smartfilter-apply');
-            if (applyButton)
-                applyButton.addEventListener('click', () => {
+            if (applyButton) {
+                const handleApply = () => {
                     const selectedVoices = this.getSFilterSelectedValues(modal, 'voice');
                     const selectedQualities = this.getSFilterSelectedValues(modal, 'quality');
                     this.applySFilterFilters(selectedVoices, selectedQualities);
                     closeModal();
-                });
+                };
+                applyButton.addEventListener('click', handleApply);
+                applyButton.addEventListener('hover:enter', handleApply);
+            }
+
+            const activeVoiceSet = new Set(Array.isArray(this.activeSFilterVoices) ? this.activeSFilterVoices : []);
+            const activeQualitySet = new Set(Array.isArray(this.activeSFilterQualities) ? this.activeSFilterQualities : []);
 
             this.forEachNode(modal.querySelectorAll('.smartfilter-chip'), (chip) => {
-                chip.addEventListener('click', () => this.toggleClass(chip, 'active'));
+                const type = chip.getAttribute('data-type');
+                const code = this.normalizeFilterText(chip.getAttribute('data-code') || chip.getAttribute('data-value'));
+                if ((type === 'voice' && activeVoiceSet.has(code)) || (type === 'quality' && activeQualitySet.has(code)))
+                    this.addClass(chip, 'active');
+
+                const toggle = () => this.toggleClass(chip, 'active');
+                chip.addEventListener('click', toggle);
+                chip.addEventListener('hover:enter', toggle);
             });
 
             this.sfilterKeyHandler = (event) => {
@@ -1585,7 +1740,7 @@
         getSFilterSelectedValues(modal, type) {
             const selected = [];
             this.forEachNode(modal.querySelectorAll('.smartfilter-chip[data-type="' + type + '"].active'), (chip) => {
-                const value = chip.getAttribute('data-value');
+                const value = chip.getAttribute('data-code') || chip.getAttribute('data-value');
                 if (value)
                     selected.push(value);
             });
@@ -1603,6 +1758,9 @@
             const qualityList = Array.isArray(qualities)
                 ? qualities.map((quality) => this.normalizeFilterText(quality)).filter(Boolean)
                 : [];
+
+            this.activeSFilterVoices = voiceList.slice();
+            this.activeSFilterQualities = qualityList.slice();
 
             const hasFolders = !!container.querySelector('[data-folder="true"][data-provider]');
 
@@ -1677,8 +1835,21 @@
         },
 
         createSFilterChip(type, value) {
-            const safeValue = value !== null && value !== undefined ? String(value) : '';
-            return `<button type="button" class="smartfilter-chip" data-type="${type}" data-value="${this.escapeHtml(safeValue)}">${this.escapeHtml(safeValue)}</button>`;
+            const raw = value !== null && value !== undefined ? String(value) : '';
+            const match = raw.match(/^(.*?)(?:\s*\((\d+)\))?$/);
+            const label = match && match[1] ? match[1].trim() : raw.trim();
+            const count = match && match[2] ? match[2] : '';
+            const normalized = this.normalizeFilterText(label) || this.normalizeFilterText(raw);
+            const safeLabel = this.escapeHtml(label || raw);
+            const safeCount = count ? this.escapeHtml(count) : '';
+            const valueAttr = this.escapeHtml(label || raw || '');
+            const codeAttr = this.escapeHtml(normalized || (label ? label.toLowerCase() : raw.toLowerCase()));
+            const countMarkup = safeCount ? `<span class="smartfilter-chip__count">${safeCount}</span>` : '';
+
+            return `<div class="smartfilter-chip selector" data-type="${type}" data-value="${valueAttr}" data-code="${codeAttr}" tabindex="0">` +
+                `<span class="smartfilter-chip__label">${safeLabel || '&nbsp;'}</span>` +
+                countMarkup +
+                `</div>`;
         },
 
         hookXHR() {
