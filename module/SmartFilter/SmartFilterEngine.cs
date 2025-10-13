@@ -211,12 +211,15 @@ namespace SmartFilter
             if (successful.Count > 0)
                 aggregation.Type = DetermineContentType(successful, serial, providerFilter, requestedSeason, aggregation.Type);
 
+            if (string.IsNullOrWhiteSpace(aggregation.Type))
+                aggregation.Type = DetermineDefaultType(serial, providerFilter, requestedSeason);
+
             if (preferSingleProvider && string.Equals(aggregation.Type, "similar", StringComparison.OrdinalIgnoreCase))
                 aggregation.Type = requestedSeason > 0 ? "episode" : "season";
 
-            var payload = BuildAggregationData(successful, aggregation.Type, providerFilter, baseQuery);
-            aggregation.Data = payload.Json;
-            aggregation.Html = payload.Html;
+            var aggregatedItems = FlattenProviderItems(successful, aggregation.Type);
+            aggregation.Data = aggregatedItems;
+            aggregation.Html = null;
             aggregation.Providers = results.Select(r => r.ToStatus()).OrderBy(p => p.Index ?? int.MaxValue).ThenBy(p => p.Name).ToList();
 
             SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
@@ -409,7 +412,7 @@ namespace SmartFilter
         private string DetermineContentType(IEnumerable<ProviderFetchResult> results, int serial, string providerFilter, int requestedSeason, string fallback)
         {
             if (serial == 1 && string.IsNullOrWhiteSpace(providerFilter) && requestedSeason <= 0)
-                return "similar";
+                return "season";
 
             var rawContentTypes = results
                 .Select(r => r.ContentType)
@@ -492,10 +495,10 @@ namespace SmartFilter
                     yield break;
                 }
 
-                yield return "similar";
                 yield return "season";
                 yield return "episode";
                 yield return "movie";
+                yield return "similar";
                 yield break;
             }
 
@@ -512,10 +515,59 @@ namespace SmartFilter
                 if (requestedSeason > 0)
                     return "episode";
 
-                return string.IsNullOrWhiteSpace(providerFilter) ? "similar" : "season";
+                return "season";
             }
 
             return "movie";
+        }
+
+        private JArray FlattenProviderItems(IEnumerable<ProviderFetchResult> results, string expectedType)
+        {
+            var aggregated = new JArray();
+            var providerResults = (results ?? Array.Empty<ProviderFetchResult>()).ToList();
+
+            if (providerResults.Count == 0)
+                return aggregated;
+
+            string normalizedType = string.IsNullOrWhiteSpace(expectedType) ? "movie" : expectedType;
+            bool isSeason = string.Equals(normalizedType, "season", StringComparison.OrdinalIgnoreCase);
+            bool isEpisode = string.Equals(normalizedType, "episode", StringComparison.OrdinalIgnoreCase);
+
+            foreach (var result in providerResults)
+            {
+                if (result?.Payload == null)
+                    continue;
+
+                foreach (var token in ExtractItems(result.Payload, normalizedType))
+                {
+                    if (token is not JObject obj)
+                    {
+                        aggregated.Add(token);
+                        continue;
+                    }
+
+                    if (isSeason)
+                    {
+                        if (!NormalizeSeasonItem(obj, result))
+                            continue;
+                    }
+                    else if (isEpisode)
+                    {
+                        if (!NormalizeEpisodeItem(obj, result, strict: false, out _))
+                            continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(obj.Value<string>("provider")))
+                        obj["provider"] = ResolveProviderName(result);
+
+                    if (string.IsNullOrWhiteSpace(obj.Value<string>("balanser")) && !string.IsNullOrWhiteSpace(result.ProviderPlugin))
+                        obj["balanser"] = result.ProviderPlugin;
+
+                    aggregated.Add(obj);
+                }
+            }
+
+            return aggregated;
         }
 
         private AggregatedPayload BuildAggregationData(IEnumerable<ProviderFetchResult> results, string expectedType, string providerFilter, Dictionary<string, string> baseQuery)

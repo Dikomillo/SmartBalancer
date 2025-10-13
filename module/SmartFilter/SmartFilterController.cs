@@ -90,52 +90,13 @@ namespace SmartFilter
                 if (IsEmpty(aggregation.Data))
                     return OnError("Контент не найден");
 
-                var providerStatus = aggregation.Providers
-                    .Select(p => new
-                    {
-                        name = p.Name,
-                        plugin = p.Plugin,
-                        status = p.Status,
-                        items = p.Items,
-                        responseTime = p.ResponseTime,
-                        error = p.Error
-                    })
-                    .ToList();
-
                 if (rjson)
                 {
-                    bool isSeries = string.Equals(aggregation.Type, "season", StringComparison.OrdinalIgnoreCase) || string.Equals(aggregation.Type, "episode", StringComparison.OrdinalIgnoreCase);
                     var responseObject = new JObject
                     {
-                        ["type"] = aggregation.Type,
-                        ["providers"] = JArray.FromObject(providerStatus),
-                        ["progressKey"] = progressKey
+                        ["type"] = string.IsNullOrWhiteSpace(aggregation.Type) ? "movie" : aggregation.Type,
+                        ["data"] = ExtractDataArray(aggregation.Data)
                     };
-
-                    if (isSeries)
-                    {
-                        var seriesPayload = SeriesDataHelper.Extract(aggregation.Type, aggregation.Data);
-                        responseObject["data"] = seriesPayload.Items.DeepClone();
-
-                        var seriesResults = seriesPayload.Container != null && seriesPayload.Container.HasValues
-                            ? (JToken)seriesPayload.Container
-                            : seriesPayload.Items;
-                        responseObject["results"] = seriesResults.DeepClone();
-
-                        if (seriesPayload.Voice != null)
-                            responseObject["voice"] = seriesPayload.Voice.DeepClone();
-
-                        if (!string.IsNullOrWhiteSpace(seriesPayload.MaxQuality))
-                            responseObject["maxquality"] = seriesPayload.MaxQuality;
-
-                        if (seriesPayload.Metadata != null)
-                            responseObject["metadata"] = seriesPayload.Metadata.DeepClone();
-                    }
-                    else
-                    {
-                        responseObject["data"] = aggregation.Data ?? new JArray();
-                        responseObject["results"] = aggregation.Data ?? new JArray();
-                    }
 
                     return Content(responseObject.ToString(Formatting.None), "application/json; charset=utf-8");
                 }
@@ -176,6 +137,23 @@ namespace SmartFilter
                 return 0;
 
             return int.TryParse(value.ToString(), out int result) ? result : 0;
+        }
+
+        private static JArray ExtractDataArray(JToken data)
+        {
+            if (data is JArray array)
+                return array;
+
+            if (data is JObject obj)
+            {
+                foreach (var key in new[] { "data", "results", "items", "episodes", "seasons" })
+                {
+                    if (obj.TryGetValue(key, out var token) && token is JArray nested)
+                        return nested;
+                }
+            }
+
+            return new JArray();
         }
 
         private ActionResult OnError(string message)
