@@ -35,6 +35,20 @@ namespace SmartFilter
         public string ProviderPlugin => Descriptor?.Plugin;
         public int? ProviderIndex => Descriptor?.Index;
 
+        private int? _estimatedItems;
+
+        public bool HasContent
+        {
+            get
+            {
+                if (ItemsCount > 0)
+                    return true;
+
+                _estimatedItems ??= EstimateItems(Payload);
+                return _estimatedItems > 0;
+            }
+        }
+
         public ProviderStatus ToStatus()
         {
             return new ProviderStatus
@@ -43,12 +57,83 @@ namespace SmartFilter
                 Plugin = ProviderPlugin,
                 Index = ProviderIndex,
                 Status = Success
-                    ? (ItemsCount > 0 ? "completed" : "empty")
+                    ? (HasContent ? "completed" : "empty")
                     : "error",
                 Items = ItemsCount,
                 ResponseTime = ResponseTime,
                 Error = Success ? null : (ErrorMessage ?? "Ошибка запроса")
             };
+        }
+
+        private static int EstimateItems(JToken payload, int depth = 0)
+        {
+            if (payload == null || depth > 2)
+                return 0;
+
+            if (payload is JArray array)
+            {
+                int validCount = array.Count(item => item != null && item.Type != JTokenType.Null && item.Type != JTokenType.Undefined);
+                return validCount;
+            }
+
+            if (payload is JObject obj)
+            {
+                if (obj.TryGetValue("success", out var success)
+                    && success.Type == JTokenType.Boolean
+                    && !success.Value<bool>())
+                {
+                    return 0;
+                }
+
+                if (obj.TryGetValue("status", out var status)
+                    && status.Type == JTokenType.String
+                    && status.Value<string>().Equals("error", StringComparison.OrdinalIgnoreCase))
+                {
+                    return 0;
+                }
+
+                var standardKeys = new[]
+                {
+                    "data", "results", "items", "episodes", "seasons", "voice", "voices", "voice_list", "translations",
+                    "files", "playlist", "streams", "qualities", "subtitles", "media"
+                };
+
+                foreach (var key in standardKeys)
+                {
+                    if (obj.TryGetValue(key, out var token) && token is JArray arr && arr.Count > 0)
+                    {
+                        int validCount = arr.Count(item => item != null && item.Type != JTokenType.Null && item.Type != JTokenType.Undefined);
+                        if (validCount > 0)
+                            return validCount;
+                    }
+                }
+
+                if (obj.TryGetValue("content_type", out _) && obj.TryGetValue("translations", out var translations) && translations is JArray transArr)
+                {
+                    int validCount = transArr.Count(item => item != null && item.Type != JTokenType.Null && item.Type != JTokenType.Undefined);
+                    if (validCount > 0)
+                        return validCount;
+                }
+
+                foreach (var property in obj.Properties())
+                {
+                    if (property.Value is JArray nested && nested.Count > 0)
+                    {
+                        int validCount = nested.Count(item => item != null && item.Type != JTokenType.Null && item.Type != JTokenType.Undefined);
+                        if (validCount > 0)
+                            return validCount;
+                    }
+
+                    if (property.Value is JObject nestedObj)
+                    {
+                        int nestedCount = EstimateItems(nestedObj, depth + 1);
+                        if (nestedCount > 0)
+                            return nestedCount;
+                    }
+                }
+            }
+
+            return 0;
         }
     }
 
