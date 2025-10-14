@@ -72,7 +72,6 @@ namespace SmartFilter
                 var cacheKey = SmartFilterEngine.BuildCacheKey(querySnapshot);
                 var progressKey = SmartFilterProgress.BuildProgressKey(cacheKey);
                 int requestedSeason = TryParseInt(HttpContext.Request.Query["s"]);
-                ResponseRenderer.MovieRenderPayload moviePayload = null;
 
                 var engine = new SmartFilterEngine(memoryCache, host, HttpContext);
                 var aggregation = await InvokeCache(cacheKey,
@@ -86,36 +85,36 @@ namespace SmartFilter
                 };
                 aggregation.ProgressKey ??= progressKey;
 
-                if (string.Equals(aggregation.Type, "movie", StringComparison.OrdinalIgnoreCase))
-                {
-                    moviePayload = ResponseRenderer.PrepareMoviePayload(aggregation.Data, querySnapshot, host);
-                    if (moviePayload?.Items != null)
-                        aggregation.Data = moviePayload.Items;
-                }
-
                 SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
 
-                bool hasContent = !IsEmpty(aggregation.Data);
-
-                if (!hasContent && (moviePayload?.HasActiveFilters ?? false))
-                    hasContent = true;
+                var payload = aggregation.Data as JObject ?? new JObject();
+                bool hasContent = !IsEmpty(payload);
 
                 if (!hasContent)
                     return OnError("Контент не найден");
 
                 if (rjson)
                 {
+                    var items = payload.Value<JArray>("items") ?? new JArray();
                     var responseObject = new JObject
                     {
-                        ["type"] = string.IsNullOrWhiteSpace(aggregation.Type) ? "movie" : aggregation.Type,
-                        ["data"] = ExtractDataArray(aggregation.Data)
+                        ["type"] = string.IsNullOrWhiteSpace(aggregation.Type)
+                            ? ResolveAggregationType(serial, provider, requestedSeason)
+                            : aggregation.Type,
+                        ["data"] = items
                     };
+
+                    if (payload.TryGetValue("voice", out var voiceToken) && voiceToken is JArray voiceArray)
+                        responseObject["voice"] = voiceArray;
+
+                    if (payload.TryGetValue("maxquality", out var qualityToken) && qualityToken.Type != JTokenType.Null)
+                        responseObject["maxquality"] = qualityToken;
 
                     return Content(responseObject.ToString(Formatting.None), "application/json; charset=utf-8");
                 }
                 else
                 {
-                    var html = aggregation.Html ?? ResponseRenderer.BuildHtml(aggregation.Type, aggregation.Data, title, original_title, host, querySnapshot, moviePayload);
+                    var html = aggregation.Html ?? ResponseRenderer.BuildHtml(aggregation.Type, payload, title, original_title, host, querySnapshot);
                     if (string.IsNullOrEmpty(html))
                         return OnError("Контент не найден");
 
@@ -152,23 +151,6 @@ namespace SmartFilter
             return int.TryParse(value.ToString(), out int result) ? result : 0;
         }
 
-        private static JArray ExtractDataArray(JToken data)
-        {
-            if (data is JArray array)
-                return array;
-
-            if (data is JObject obj)
-            {
-                foreach (var key in new[] { "data", "results", "items", "episodes", "seasons" })
-                {
-                    if (obj.TryGetValue(key, out var token) && token is JArray nested)
-                        return nested;
-                }
-            }
-
-            return new JArray();
-        }
-
         private ActionResult OnError(string message)
         {
             if (IsAjaxRequest)
@@ -179,33 +161,23 @@ namespace SmartFilter
 
         private bool IsAjaxRequest => HttpContext.Request.Headers["X-Requested-With"] == "XMLHttpRequest";
 
-        private static bool IsEmpty(JToken token)
+        private static bool IsEmpty(JObject payload)
         {
-            if (token == null)
+            if (payload == null)
                 return true;
 
-            if (token is JArray array)
-                return array.Count == 0;
+            var items = payload.Value<JArray>("items");
+            if (items != null)
+                return items.Count == 0;
 
-            if (token is JObject obj)
-            {
-                foreach (var property in obj.Properties())
-                {
-                    if (property.Value is JArray nested && nested.Count > 0)
-                        return false;
-                }
-
-                return !obj.Properties().Any();
-            }
-
-            return !token.HasValues;
+            return !payload.Properties().Any();
         }
 
         private static string ResolveContentType(int serial, string provider)
         {
             return serial switch
             {
-                1 => string.IsNullOrWhiteSpace(provider) ? "similar" : "season",
+                1 => "season",
                 2 => "episode",
                 _ => "movie"
             };
@@ -218,7 +190,7 @@ namespace SmartFilter
                 if (requestedSeason > 0)
                     return "episode";
 
-                return string.IsNullOrWhiteSpace(provider) ? "similar" : "season";
+                return "season";
             }
 
             return serial == 2 ? "episode" : "movie";
