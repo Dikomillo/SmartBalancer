@@ -72,6 +72,7 @@ namespace SmartFilter
                 var cacheKey = SmartFilterEngine.BuildCacheKey(querySnapshot);
                 var progressKey = SmartFilterProgress.BuildProgressKey(cacheKey);
                 int requestedSeason = TryParseInt(HttpContext.Request.Query["s"]);
+                ResponseRenderer.MovieRenderPayload moviePayload = null;
 
                 var engine = new SmartFilterEngine(memoryCache, host, HttpContext);
                 var aggregation = await InvokeCache(cacheKey,
@@ -85,9 +86,21 @@ namespace SmartFilter
                 };
                 aggregation.ProgressKey ??= progressKey;
 
+                if (string.Equals(aggregation.Type, "movie", StringComparison.OrdinalIgnoreCase))
+                {
+                    moviePayload = ResponseRenderer.PrepareMoviePayload(aggregation.Data, querySnapshot, host);
+                    if (moviePayload?.Items != null)
+                        aggregation.Data = moviePayload.Items;
+                }
+
                 SmartFilterProgress.PublishFinal(memoryCache, progressKey, aggregation.Providers);
 
-                if (IsEmpty(aggregation.Data))
+                bool hasContent = !IsEmpty(aggregation.Data);
+
+                if (!hasContent && (moviePayload?.HasActiveFilters ?? false))
+                    hasContent = true;
+
+                if (!hasContent)
                     return OnError("Контент не найден");
 
                 if (rjson)
@@ -102,7 +115,7 @@ namespace SmartFilter
                 }
                 else
                 {
-                    var html = aggregation.Html ?? ResponseRenderer.BuildHtml(aggregation.Type, aggregation.Data, title, original_title);
+                    var html = aggregation.Html ?? ResponseRenderer.BuildHtml(aggregation.Type, aggregation.Data, title, original_title, host, querySnapshot, moviePayload);
                     if (string.IsNullOrEmpty(html))
                         return OnError("Контент не найден");
 
