@@ -1,0 +1,6 @@
+/home/lampac/module/SmartFilter/obj/Debug/net9.0/SmartFilter.csproj.AssemblyReference.cache
+/home/lampac/module/SmartFilter/obj/Debug/net9.0/rpswa.dswa.cache.json
+/home/lampac/module/SmartFilter/obj/Debug/net9.0/SmartFilter.GeneratedMSBuildEditorConfig.editorconfig
+/home/lampac/module/SmartFilter/obj/Debug/net9.0/SmartFilter.AssemblyInfoInputs.cache
+/home/lampac/module/SmartFilter/obj/Debug/net9.0/SmartFilter.AssemblyInfo.cs
+/home/lampac/module/SmartFilter/obj/Debug/net9.0/SmartFilter.csproj.CoreCompileInputs.cache
