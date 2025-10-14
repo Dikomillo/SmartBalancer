@@ -199,14 +199,14 @@ namespace SmartFilter
 
     static class ProviderProxy
     {
-        public static async Task<(string type, List<JObject> episodes, string html, string rawJson)> FetchAsync(
+        public static async Task<(string type, List<JObject>? episodes, string? html, string? rawJson)> FetchAsync(
             HttpContext ctx, IMemoryCache cache, string url, int s, string t, bool rjson, int timeoutMs)
         {
             url = UrlUtil.EnsureQuery(url, "s", s.ToString());
             if (!string.IsNullOrEmpty(t)) url = UrlUtil.EnsureQuery(url, "t", t);
 
             string ckey = "sf:prov:" + url + $"|rjson={rjson}";
-            if (cache.TryGetValue(ckey, out (string type, List<JObject> episodes, string html, string rawJson) cached))
+            if (cache.TryGetValue(ckey, out (string type, List<JObject>? episodes, string? html, string? rawJson) cached))
                 return cached;
 
             var header = HeadersModel.Init(("localrequest", AppInit.rootPasswd));
@@ -214,7 +214,7 @@ namespace SmartFilter
             if (!rjson)
             {
                 string html = await Http.Get(url, timeoutSeconds: Math.Max(2, timeoutMs / 1000), headers: header);
-                var res = (type: "html", episodes: (List<JObject>)null, html: html ?? string.Empty, rawJson: (string)null);
+                var res = (type: "html", episodes: (List<JObject>?)null, html: html ?? string.Empty, rawJson: (string?)null);
                 cache.Set(ckey, res, TimeSpan.FromMinutes(ModInit.conf.cacheMinutes));
                 return res;
             }
@@ -222,7 +222,8 @@ namespace SmartFilter
             string json = await Http.Get(url, timeoutSeconds: Math.Max(2, timeoutMs / 1000), headers: header);
             if (string.IsNullOrEmpty(json))
             {
-                var empty = (type: "episode", episodes: new List<JObject>(), html: (string)null, rawJson: "{}");
+                (string type, List<JObject> episodes, string? html, string rawJson) empty =
+                    ("episode", new List<JObject>(), null, "{}");
                 cache.Set(ckey, empty, TimeSpan.FromMinutes(5));
                 return empty;
             }
@@ -236,18 +237,18 @@ namespace SmartFilter
                 {
                     var data = root["data"] as JArray ?? new JArray();
                     var list = data.OfType<JObject>().ToList();
-                    var res = (type: "episode", episodes: list, html: (string)null, rawJson: json);
+                    var res = (type: "episode", episodes: list, html: (string?)null, rawJson: json);
                     cache.Set(ckey, res, TimeSpan.FromMinutes(ModInit.conf.cacheMinutes));
                     return res;
                 }
 
-                var pass = (type: type ?? "unknown", episodes: (List<JObject>)null, html: (string)null, rawJson: json);
+                var pass = (type: type ?? "unknown", episodes: (List<JObject>?)null, html: (string?)null, rawJson: json);
                 cache.Set(ckey, pass, TimeSpan.FromMinutes(ModInit.conf.cacheMinutes));
                 return pass;
             }
             catch
             {
-                var bad = (type: "unknown", episodes: (List<JObject>)null, html: (string)null, rawJson: null);
+                var bad = (type: "unknown", episodes: (List<JObject>?)null, html: (string?)null, rawJson: (string?)null);
                 cache.Set(ckey, bad, TimeSpan.FromMinutes(5));
                 return bad;
             }
@@ -547,11 +548,25 @@ namespace SmartFilter
                 if (!string.IsNullOrEmpty(preferLink))
                     link = preferLink;
 
-                var stpl = SubtitleTpl.FromJson(ep["subtitles"]);
+                SubtitleTpl? subtitles = null;
+                if (ep["subtitles"] is JArray subsArr && subsArr.Count > 0)
+                {
+                    var stpl = new SubtitleTpl(subsArr.Count);
+                    foreach (var sub in subsArr.OfType<JObject>())
+                    {
+                        string label = sub.Value<string>("label") ?? sub.Value<string>("lang") ?? "Unknown";
+                        string url = sub.Value<string>("url");
+                        if (!string.IsNullOrEmpty(url))
+                            stpl.Append(label, url);
+                    }
+
+                    if (!stpl.IsEmpty())
+                        subtitles = stpl;
+                }
                 string method = ep.Value<string>("method") == "call" ? "call" : "play";
                 string streamlink = ep.Value<string>("stream") ?? ep.Value<string>("url");
 
-                etpl.Append(name, title, s, e, link, method, qtpl, stpl,
+                etpl.Append(name, title, s, e, link, method, qtpl, subtitles,
                             streamlink: streamlink,
                             voice_name: provider);
             }
@@ -595,11 +610,25 @@ namespace SmartFilter
                 if (!string.IsNullOrEmpty(preferLink))
                     link = preferLink;
 
-                var stpl = SubtitleTpl.FromJson(m?["subtitles"]);
+                SubtitleTpl? subtitles = null;
+                if (m?["subtitles"] is JArray subsArr && subsArr.Count > 0)
+                {
+                    var stpl = new SubtitleTpl(subsArr.Count);
+                    foreach (var sub in subsArr.OfType<JObject>())
+                    {
+                        string label = sub.Value<string>("label") ?? sub.Value<string>("lang") ?? "Unknown";
+                        string url = sub.Value<string>("url");
+                        if (!string.IsNullOrEmpty(url))
+                            stpl.Append(label, url);
+                    }
+
+                    if (!stpl.IsEmpty())
+                        subtitles = stpl;
+                }
                 string method = m?.Value<string>("method") == "call" ? "call" : "play";
                 string streamlink = m?.Value<string>("stream") ?? m?.Value<string>("url");
 
-                etpl.Append("Фильм", title ?? "Movie", s.ToString(), "1", link, method, qtpl, stpl, streamlink: streamlink);
+                etpl.Append("Фильм", title ?? "Movie", s.ToString(), "1", link, method, qtpl, subtitles, streamlink: streamlink);
                 return etpl;
             }
             catch { return etpl; }

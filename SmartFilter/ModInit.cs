@@ -13,7 +13,7 @@ namespace SmartFilter
         private static int _configVersion = 0;
         public static int ConfigVersion => _configVersion;
 
-        private static FileSystemWatcher _fsw;
+        private static FileSystemWatcher? _fsw;
 
         public static void InvalidateCache() => Interlocked.Increment(ref _configVersion);
 
