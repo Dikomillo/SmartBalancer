@@ -1,8 +1,0 @@
-{
-  "enable": true,
-  "version": 3,
-  "index": 0,
-  "namespace": "SmartFilter",
-  "initspace": "ModInit",
-  "online": "OnlineApi"
-}
