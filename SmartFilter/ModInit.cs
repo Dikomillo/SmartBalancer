@@ -67,6 +67,8 @@ namespace SmartFilter
 
         public class Conf
         {
+    	    public bool enable = true;
+
             public int timeout = 30_000;
             public int cacheMinutes = 20;
             public int parallel = 6;
