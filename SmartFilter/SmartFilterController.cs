@@ -33,8 +33,8 @@ namespace SmartFilter
             int year,
             int serial = -1,
             int s = -1,
-            string t = null,
-            string p = null,
+            string? t = null,
+            string? p = null,
             bool rjson = false,
             int collect = 0
         )
@@ -102,7 +102,7 @@ namespace SmartFilter
 
     static class EventsClient
     {
-        public static async Task<List<(string name, string url, string plugin, int index)>> GetAsync(
+        public static async Task<List<(string name, string url, string? plugin, int index)>> GetAsync(
             HttpContext ctx, IMemoryCache cache, string host,
             long id, string imdb_id, long kp, string title, string original_title, string original_language, int year, int serial)
         {
@@ -111,26 +111,26 @@ namespace SmartFilter
                          $"&original_language={HttpUtility.UrlEncode(original_language)}&year={year}&serial={serial}&islite=true";
 
             string ckey = "sf:events:" + url;
-            if (!cache.TryGetValue(ckey, out JArray arr))
+            if (!cache.TryGetValue(ckey, out JArray? arr))
             {
                 var header = HeadersModel.Init(("localrequest", AppInit.rootPasswd));
                 arr = await Http.Get<JArray>(url, timeoutSeconds: 8, headers: header);
                 if (arr != null) cache.Set(ckey, arr, TimeSpan.FromMinutes(ModInit.conf.cacheMinutes));
             }
 
-            var list = new List<(string,string,string,int)>();
+            var list = new List<(string name, string url, string? plugin, int index)>();
             if (arr == null) return list;
 
             foreach (var it in arr)
             {
-                string name = it.Value<string>("name");
-                string u = it.Value<string>("url");
-                string plugin = it.Value<string>("plugin");
+                string? name = it.Value<string>("name");
+                string? u = it.Value<string>("url");
+                string? plugin = it.Value<string>("plugin");
                 int index = it.Value<int?>("index") ?? 0;
 
                 if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(u)) continue;
-                u = UrlUtil.EnsureQuery(u, "rjson", "true");
-                list.Add((name, u, plugin, index));
+                u = UrlUtil.EnsureQuery(u, "rjson", "true") ?? u;
+                list.Add((name!, u!, plugin, index));
             }
 
             list = list.Where(i => !string.Equals(i.Item3, "smartfilter", StringComparison.OrdinalIgnoreCase)).ToList();
@@ -142,8 +142,8 @@ namespace SmartFilter
 
     static class ProviderFilter
     {
-        public static List<(string name, string url, string plugin, int index)> Apply(
-            List<(string name, string url, string plugin, int index)> src, string[] include, string[] exclude)
+        public static List<(string name, string url, string? plugin, int index)> Apply(
+            List<(string name, string url, string? plugin, int index)> src, string[] include, string[] exclude)
         {
             if (include != null && include.Length > 0)
                 src = src.Where(i => include.Contains(i.plugin, StringComparer.OrdinalIgnoreCase)).ToList();
@@ -154,8 +154,8 @@ namespace SmartFilter
             return src;
         }
 
-        public static (string name, string url, string plugin, int index) PickActive(
-            List<(string name, string url, string plugin, int index)> list, string plugin)
+        public static (string name, string url, string? plugin, int index) PickActive(
+            List<(string name, string url, string? plugin, int index)> list, string? plugin)
         {
             if (list == null || list.Count == 0)
                 throw new InvalidOperationException("No providers available");
@@ -175,10 +175,10 @@ namespace SmartFilter
     {
         public static VoiceTpl Build(
             string host,
-            List<(string name, string url, string plugin, int index)> list,
-            (string name, string url, string plugin, int index) active,
+            List<(string name, string url, string? plugin, int index)> list,
+            (string name, string url, string? plugin, int index) active,
             long id, string imdb_id, long kp, string title, string original_title, string original_language, int year, int serial,
-            int s, string t, bool rjson)
+            int s, string? t, bool rjson)
         {
             var vtpl = new VoiceTpl();
 
@@ -201,10 +201,10 @@ namespace SmartFilter
     static class ProviderProxy
     {
         public static async Task<(string type, List<JObject>? episodes, string? html, string? rawJson)> FetchAsync(
-            HttpContext ctx, IMemoryCache cache, string url, int s, string t, bool rjson, int timeoutMs)
+            HttpContext ctx, IMemoryCache cache, string url, int s, string? t, bool rjson, int timeoutMs)
         {
-            url = UrlUtil.EnsureQuery(url, "s", s.ToString());
-            if (!string.IsNullOrEmpty(t)) url = UrlUtil.EnsureQuery(url, "t", t);
+            url = UrlUtil.EnsureQuery(url, "s", s.ToString()) ?? url;
+            if (!string.IsNullOrEmpty(t)) url = UrlUtil.EnsureQuery(url, "t", t) ?? url;
 
             string ckey = "sf:prov:" + url + $"|rjson={rjson}";
             if (cache.TryGetValue(ckey, out (string type, List<JObject>? episodes, string? html, string? rawJson) cached))
@@ -257,8 +257,8 @@ namespace SmartFilter
 
         public static async Task<List<JObject>> CollectEpisodesAsync(
             HttpContext ctx, IMemoryCache cache,
-            List<(string name, string url, string plugin, int index)> providers,
-            int s, string t, int timeoutMs, int parallel)
+            List<(string name, string url, string? plugin, int index)> providers,
+            int s, string? t, int timeoutMs, int parallel)
         {
             var results = new ConcurrentBag<JObject>();
             using var cts = new CancellationTokenSource(timeoutMs);
@@ -319,15 +319,15 @@ namespace SmartFilter
 
         private static readonly ConcurrentDictionary<string, int> _errorCounts = new();
 
-        public static (StreamQualityTpl tpl, string firstLink) Build(
+        public static (StreamQualityTpl tpl, string? firstLink) Build(
             IMemoryCache memoryCache,
-            JToken quality,
-            string[] qualityPriority,
+            JToken? quality,
+            string[]? qualityPriority,
             bool enablePriority,
             bool allow4K,
             bool allowHDR,
-            Action<string, Exception> logger = null,
-            string provider = null)
+            Action<string, Exception>? logger = null,
+            string? provider = null)
         {
             if (quality == null)
             {
@@ -337,10 +337,10 @@ namespace SmartFilter
 
             string raw = quality.ToString(Formatting.None);
             string flags = $"{enablePriority}_{allow4K}_{allowHDR}";
-            string pr = qualityPriority != null ? string.Join(",", qualityPriority) : "";
+            string pr = qualityPriority != null ? string.Join(",", qualityPriority) : string.Empty;
             string cacheKey = $"qh:v{ModInit.ConfigVersion}:{CrypTo.md5(raw)}:{CrypTo.md5(pr)}:{flags}";
 
-            if (memoryCache.TryGetValue(cacheKey, out (StreamQualityTpl tpl, string firstLink) cached))
+            if (memoryCache.TryGetValue(cacheKey, out (StreamQualityTpl tpl, string? firstLink) cached))
                 return cached;
 
             var result = BuildInternal(quality, qualityPriority, enablePriority, allow4K, allowHDR, logger, provider);
@@ -349,14 +349,14 @@ namespace SmartFilter
             return result;
         }
 
-        private static (StreamQualityTpl tpl, string firstLink) BuildInternal(
+        private static (StreamQualityTpl tpl, string? firstLink) BuildInternal(
             JToken quality,
-            string[] qualityPriority,
+            string[]? qualityPriority,
             bool enablePriority,
             bool allow4K,
             bool allowHDR,
-            Action<string, Exception> logger,
-            string provider)
+            Action<string, Exception>? logger,
+            string? provider)
         {
             var tpl = new StreamQualityTpl();
             var items = new List<(string label, string link)>();
@@ -369,8 +369,8 @@ namespace SmartFilter
                     {
                         try
                         {
-                            string link = q.Value<string>("link") ?? q.Value<string>("url");
-                            string label = q.Value<string>("name") ?? q.Value<string>("label") ?? q.Value<string>("quality");
+                            string? link = q.Value<string>("link") ?? q.Value<string>("url");
+                            string? label = q.Value<string>("name") ?? q.Value<string>("label") ?? q.Value<string>("quality");
 
                             if (string.IsNullOrEmpty(link))
                             {
@@ -390,7 +390,7 @@ namespace SmartFilter
                             if (!allowHDR && IsHdr(label))
                                 continue;
 
-                            items.Add((label, link));
+                            items.Add((label!, link!));
                         }
                         catch (Exception ex)
                         {
@@ -414,7 +414,7 @@ namespace SmartFilter
             if (enablePriority && qualityPriority != null && qualityPriority.Length > 0 && items.Count > 1)
             {
                 items = items
-                    .OrderBy(i => GetQualityPriority(i.label, qualityPriority))
+                    .OrderBy(i => GetQualityPriority(i.label, qualityPriority!))
                     .ThenByDescending(i => NumericRes(i.label))
                     .ToList();
             }
@@ -454,10 +454,10 @@ namespace SmartFilter
             return m.Success ? int.Parse(m.Groups[1].Value) : 0;
         }
 
-        private static string Sanitize(JToken t) =>
+        private static string Sanitize(JToken? t) =>
             Regex.Replace(t?.ToString(Formatting.None) ?? "", @"([?&])(token|sig|signature|key|auth)=[^&]+", "$1$2=***", RegexOptions.IgnoreCase);
 
-        private static void Log(Action<string, Exception> logger, string provider, string msg, Exception ex = null)
+        private static void Log(Action<string, Exception>? logger, string? provider, string msg, Exception? ex = null)
         {
             if (logger == null) return;
             string key = $"{provider ?? "unknown"}:{msg}";
@@ -474,7 +474,7 @@ namespace SmartFilter
         public static (SeasonTpl tpl, bool ok) FromJson(
             string host, string rawJson,
             long id, string imdb_id, long kp, string title, string original_title, string original_language, int year, int serial,
-            string t, bool rjson)
+            string? t, bool rjson)
         {
             var tpl = new SeasonTpl();
             try
@@ -534,7 +534,7 @@ namespace SmartFilter
                 if (seen.Contains(key)) continue;
                 seen.Add(key);
 
-                string provider = ep.Value<string>("details");
+                string? provider = ep.Value<string>("details");
 
                 var (qtpl, preferLink) = QualityHelper.Build(
                     memoryCache,
@@ -565,7 +565,7 @@ namespace SmartFilter
                         subtitles = stpl;
                 }
                 string method = ep.Value<string>("method") == "call" ? "call" : "play";
-                string streamlink = ep.Value<string>("stream") ?? ep.Value<string>("url");
+                string streamlink = ep.Value<string>("stream") ?? ep.Value<string>("url") ?? string.Empty;
 
                 etpl.Append(name, title, s, e, link, method, qtpl, subtitles,
                             streamlink: streamlink,
@@ -574,14 +574,14 @@ namespace SmartFilter
 
             return etpl;
 
-            static int SafeInt(JToken t, int def)
+            static int SafeInt(JToken? t, int def)
                 => t != null && int.TryParse(t.ToString(), out var v) ? v : def;
 
-            static string Norm(string u)
+            static string Norm(string? u)
                 => Regex.Replace(u ?? "", "[?&]?(sig|token|expires|ts)=[^&]+", "", RegexOptions.IgnoreCase);
         }
 
-        public static EpisodeTpl FromMovie(IMemoryCache memoryCache, string rawJson, string title, int s = 1)
+        public static EpisodeTpl FromMovie(IMemoryCache memoryCache, string rawJson, string? title, int s = 1)
         {
             var etpl = new EpisodeTpl();
             var conf = ModInit.conf;
@@ -627,7 +627,7 @@ namespace SmartFilter
                         subtitles = stpl;
                 }
                 string method = m?.Value<string>("method") == "call" ? "call" : "play";
-                string streamlink = m?.Value<string>("stream") ?? m?.Value<string>("url");
+                string streamlink = m?.Value<string>("stream") ?? m?.Value<string>("url") ?? string.Empty;
 
                 etpl.Append("Фильм", title ?? "Movie", s.ToString(), "1", link, method, qtpl, subtitles, streamlink: streamlink);
                 return etpl;
@@ -640,12 +640,13 @@ namespace SmartFilter
 
     static class UrlUtil
     {
-        public static string EnsureQuery(string url, string key, string value)
+        public static string? EnsureQuery(string? url, string key, string? value)
         {
             if (string.IsNullOrEmpty(url)) return url;
-            url = Regex.Replace(url, $"([?&]){Regex.Escape(key)}=[^&]*", $"$1{key}={HttpUtility.UrlEncode(value)}");
+            string encoded = HttpUtility.UrlEncode(value);
+            url = Regex.Replace(url, $"([?&]){Regex.Escape(key)}=[^&]*", $"$1{key}={encoded}");
             if (!Regex.IsMatch(url, $"[?&]{Regex.Escape(key)}="))
-                url += (url.Contains("?") ? "&" : "?") + $"{key}={HttpUtility.UrlEncode(value)}";
+                url += (url.Contains("?") ? "&" : "?") + $"{key}={encoded}";
             return url;
         }
     }
