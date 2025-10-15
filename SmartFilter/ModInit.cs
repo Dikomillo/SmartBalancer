@@ -1,4 +1,5 @@
 using Newtonsoft.Json;
+using Shared.Models.Module;
 using System;
 using System.IO;
 using System.Threading;
@@ -14,15 +15,22 @@ namespace SmartFilter
         public static int ConfigVersion => _configVersion;
 
         private static FileSystemWatcher? _fsw;
+        private static string _moduleRoot = "module";
+
+        private static string ModuleDirectory => Path.Combine(_moduleRoot, "SmartFilter");
+        private static string CurrentConfigPath => Path.Combine(_moduleRoot, "SmartFilter.current.conf");
+        private static string ExternalConfigPath => Path.Combine(_moduleRoot, "SmartFilter.conf");
 
         public static void InvalidateCache() => Interlocked.Increment(ref _configVersion);
 
-        public static void loaded()
+        public static void loaded(InitspaceModel initspace)
         {
-            Directory.CreateDirectory("module/SmartFilter");
+            _moduleRoot = Path.GetDirectoryName(initspace?.path ?? string.Empty) ?? "module";
+
+            Directory.CreateDirectory(ModuleDirectory);
 
             // начальная запись текущей конфигурации
-            File.WriteAllText("module/SmartFilter.current.conf", JsonConvert.SerializeObject(conf, Formatting.Indented));
+            File.WriteAllText(CurrentConfigPath, JsonConvert.SerializeObject(conf, Formatting.Indented));
 
             // попытка загрузить пользовательскую конфигурацию, если есть
             TryLoadExternalConf();
@@ -31,7 +39,7 @@ namespace SmartFilter
             // слежение за изменениями module/SmartFilter.conf
             try
             {
-                _fsw = new FileSystemWatcher("module")
+                _fsw = new FileSystemWatcher(_moduleRoot)
                 {
                     Filter = "SmartFilter.conf",
                     NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.FileName
@@ -48,16 +56,15 @@ namespace SmartFilter
         {
             try
             {
-                string path = "module/SmartFilter.conf";
-                if (!File.Exists(path))
+                if (!File.Exists(ExternalConfigPath))
                     return false;
 
-                var json = File.ReadAllText(path);
+                var json = File.ReadAllText(ExternalConfigPath);
                 var newer = JsonConvert.DeserializeObject<Conf>(json);
                 if (newer != null)
                 {
                     conf = newer;
-                    File.WriteAllText("module/SmartFilter.current.conf", JsonConvert.SerializeObject(conf, Formatting.Indented));
+                    File.WriteAllText(CurrentConfigPath, JsonConvert.SerializeObject(conf, Formatting.Indented));
                     return true;
                 }
             }
